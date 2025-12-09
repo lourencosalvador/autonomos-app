@@ -113,7 +113,7 @@ export default function LoginScreen() {
     <View className="flex-1 bg-white px-6 pt-28">
       <StatusBar style="dark" />
       
-      <View className="mb-12">
+      <View className="mb-10">
         <Text className="text-[2rem] font-bold text-gray-900">
           Entrar
         </Text>
@@ -206,7 +206,10 @@ export default function LoginScreen() {
           )}
         />
 
-        <TouchableOpacity activeOpacity={0.7}>
+        <TouchableOpacity 
+          activeOpacity={0.7}
+          onPress={() => router.push('/(auth)/forgot-password')}
+        >
           <Text className="text-[14px] font-bold text-gray-900">
             Esqueceu a Palavra Passe?
           </Text>
@@ -267,7 +270,7 @@ export default function LoginScreen() {
         )}
       </View>
 
-      <View className="flex-1 justify-end pb-16 items-center">
+      <View className="flex-1 justify-end pb-10 items-center">
         <View className="flex-row items-center opacity-80">
            <Image 
              source={require('../../../assets/images/splash-icon.png')}

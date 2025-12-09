@@ -15,6 +15,13 @@ export default function AuthLayout() {
       <Stack.Screen name="account-type" />
       <Stack.Screen name="login" />
       <Stack.Screen name="register" />
+      <Stack.Screen 
+        name="forgot-password"
+        options={{
+          presentation: 'modal',
+          animation: 'slide_from_bottom',
+        }}
+      />
     </Stack>
   );
 }
