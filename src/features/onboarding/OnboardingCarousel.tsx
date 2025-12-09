@@ -134,37 +134,50 @@ export function OnboardingCarousel({
                     from={{ opacity: 0, translateY: 16 }}
                     animate={{ opacity: 1, translateY: 0 }}
                     transition={{ type: "timing", duration: 600 }}
-                    className="mt-8"
+                    className="mt-96"
                 >
-                    <Text className="mb-3 text-xs uppercase tracking-[3px] text-[#CFEFFF]">
-                        {currentSlide.eyebrow}
-                    </Text>
-                    <Text className="text-[32px] font-bold leading-10 text-white">
+              
+                    <Text className="text-[32px] font-medium leading-10 text-white">
                         {currentSlide.copy.lead}{" "}
                         <Text
-                            className="font-extrabold"
+                            className="font-bold"
                             style={{ color: currentSlide.accent }}
                         >
                             {currentSlide.copy.highlight}
                         </Text>
                     </Text>
-                    <Text className="text-[32px] font-bold italic leading-10 text-white/90">
+                    <Text className="text-[32px] font-medium italic leading-10 text-white/90">
                         {currentSlide.copy.tail}
                     </Text>
-                    <Text className="mt-4 text-base leading-6 text-white/80">
-                        {currentSlide.description}
-                    </Text>
+                
                 </MotiView>
 
-                <View className="flex-row items-center justify-between">
-                    <View className="h-1 rounded bg-white/80 flex-1" />
+                <View className="flex-row items-center justify-between -top-7">
+                    {/* Botão Pular - Esquerda */}
+                    {!isLastStep && (
+                        <TouchableOpacity
+                            className="flex-row items-center justify-center gap-2"
+                            onPress={onFinish}
+                            activeOpacity={0.8}
+                        >
+                            <Text className="text-xl text-white/70">←</Text>
+                            <Text className="text-[22px] font-medium text-white/70">
+                                Pular
+                            </Text>
+                        </TouchableOpacity>
+                    )}
+                    
+                    {/* Espaço vazio quando é último step */}
+                    {isLastStep && <View />}
+                    
+                    {/* Botão Avançar/Começar - Direita */}
                     <TouchableOpacity
-                        className="ml-4 flex-row items-center gap-2"
+                        className="flex-row items-center justify-center gap-2"
                         onPress={goNext}
                         disabled={effectivePaused}
                         activeOpacity={0.8}
                     >
-                        <Text className="text-lg font-semibold text-white">
+                        <Text className="text-[22px] font-medium text-white">
                             {isLastStep ? "Começar" : "Avançar"}
                         </Text>
                         <Text className="text-xl text-brand-cyan">➜</Text>

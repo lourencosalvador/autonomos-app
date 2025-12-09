@@ -8,51 +8,44 @@ export type OnboardingCopy = {
 
 export type OnboardingSlide = {
     id: string;
-    eyebrow: string;
     copy: OnboardingCopy;
-    description: string;
     accent: string;
     image: ImageSourcePropType;
 };
 
 const sharedImage = require("../../../../assets/images/image-step-1.png");
-
+const sharedImage2 = require("../../../../assets/images/image-step-2.jpg");
+const sharedImage3 = require("../../../../assets/images/image-step-3.jpg");
 export const onboardingSlides: OnboardingSlide[] = [
     {
         id: "connect",
-        eyebrow: "Conexões inteligentes",
         copy: {
             lead: "O app que",
             highlight: "conecta",
             tail: "quem faz com quem precisa.",
         },
-        description: "Conheça oportunidades alinhadas ao seu perfil em poucos toques.",
         accent: "#00E7FF",
         image: sharedImage,
     },
     {
         id: "organize",
-        eyebrow: "Gestão sem atrito",
         copy: {
-            lead: "Organize suas entregas",
-            highlight: "no seu ritmo",
-            tail: "e visualize cada etapa.",
-        },
-        description: "Rotas, clientes e pagamentos centralizados em um único painel.",
+            lead: "Encontre",
+            highlight: "profissionais",
+            tail: " de confiança, perto de você, em poucos cliques.",
+        }, 
         accent: "#7AE6FF",
-        image: sharedImage,
+        image: sharedImage2,
     },
     {
         id: "grow",
-        eyebrow: "Resultado real",
         copy: {
-            lead: "Cresça com insights",
-            highlight: "em tempo real",
-            tail: "e garanta novos contratos.",
+            lead: " Mostre seu",
+            highlight: "talento",
+            tail: "conquiste clientes e aumente sua renda.",
         },
-        description: "Receba alertas personalizados e mantenha a agenda sempre cheia.",
         accent: "#46B4FF",
-        image: sharedImage,
+        image: sharedImage3,
     },
 ];
 

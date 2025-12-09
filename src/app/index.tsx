@@ -1,40 +1,32 @@
 import { useEffect, useState } from "react";
-import { Text, View } from "react-native";
-import { OnboardingCarousel } from "../features/onboarding/OnboardingCarousel";
-import { onboardingSlides } from "../features/onboarding/data/slides";
 import { SplashScreen } from "../features/splash/SplashScreen";
+import { useAppStore } from "../stores/appStore";
 
 const SPLASH_DURATION = 5000;
 
-type AppPhase = "splash" | "onboarding" | "home";
-
-export default function App() {
-    const [phase, setPhase] = useState<AppPhase>("splash");
-    const [onboardingPaused] = useState(false);
+export default function Index() {
+    const [showSplash, setShowSplash] = useState(true);
+    const { hasSeenSplash, setHasSeenSplash } = useAppStore();
 
     useEffect(() => {
-        if (phase !== "splash") return;
-        const timer = setTimeout(() => setPhase("onboarding"), SPLASH_DURATION);
-        return () => clearTimeout(timer);
-    }, [phase]);
+        // Sempre mostra splash na primeira vez que o componente carrega
+        const timer = setTimeout(() => {
+            setShowSplash(false);
+            
+            // Marca que já viu a splash apenas na primeira execução do app
+            if (!hasSeenSplash) {
+                setHasSeenSplash(true);
+            }
+        }, SPLASH_DURATION);
 
-    if (phase === "splash") {
+        return () => clearTimeout(timer);
+    }, []);
+
+    if (showSplash) {
         return <SplashScreen />;
     }
 
-    if (phase === "onboarding") {
-        return (
-            <OnboardingCarousel
-                slides={onboardingSlides}
-                paused={onboardingPaused}
-                onFinish={() => setPhase("home")}
-            />
-        );
-    }
-
-    return (
-        <View className="flex-1 items-center justify-center bg-white">
-            <Text className="text-lg font-semibold text-neutral-900">Home</Text>
-        </View>
-    );
+    // Após splash, o useProtectedRoute no _layout redireciona automaticamente
+    // baseado no estado de autenticação e onboarding
+    return null;
 }
