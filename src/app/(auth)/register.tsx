@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, Alert, ScrollView } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, Alert, ScrollView, Keyboard, TouchableWithoutFeedback } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuthStore, UserRole } from '../../stores/authStore';
@@ -35,8 +35,9 @@ export default function RegisterScreen() {
   };
 
   return (
-    <ScrollView className="flex-1 bg-white">
-      <StatusBar style="dark" />
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+      <ScrollView className="flex-1 bg-white">
+        <StatusBar style="dark" />
       
       <View className="flex-1 px-6 pt-16">
         <TouchableOpacity
@@ -158,6 +159,7 @@ export default function RegisterScreen() {
           </View>
         </View>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </TouchableWithoutFeedback>
   );
 }

@@ -8,9 +8,19 @@ interface SuccessModalProps {
   onClose: () => void;
   title?: string;
   message?: string;
+  navigateTo?: string;
+  navigationParams?: Record<string, string>;
 }
 
-export function SuccessModal({ visible, onClose, title = "Sucesso!", message = "Operação realizada com sucesso." }: SuccessModalProps) {
+export function SuccessModal({ 
+  visible, 
+  onClose, 
+  title = "Sucesso!", 
+  message = "Operação realizada com sucesso.",
+  navigateTo,
+  navigationParams
+}: SuccessModalProps) {
+  const router = useRouter();
   const animationRef = useRef<LottieView>(null);
 
   useEffect(() => {
@@ -47,7 +57,16 @@ export function SuccessModal({ visible, onClose, title = "Sucesso!", message = "
           <TouchableOpacity
             className="mt-8 w-full rounded-full bg-brand-cyan py-4"
             activeOpacity={0.8}
-            onPress={onClose}
+            onPress={() => {
+              onClose();
+              if (navigateTo) {
+                if (navigationParams) {
+                  router.push({ pathname: navigateTo as any, params: navigationParams });
+                } else {
+                  router.push(navigateTo as any);
+                }
+              }
+            }}
           >
             <Text className="text-center text-base font-bold text-white">
               Continuar

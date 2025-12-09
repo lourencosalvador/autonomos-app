@@ -7,7 +7,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import { ActivityIndicator, Alert, Image, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Keyboard, Platform, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
 import { z } from 'zod';
 import { GOOGLE_CONFIG } from '../../config/auth.config';
 import { useAuthStore } from '../../stores/authStore';
@@ -110,8 +110,9 @@ export default function LoginScreen() {
   };
 
   return (
-    <View className="flex-1 bg-white px-6 pt-28">
-      <StatusBar style="dark" />
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+      <View className="flex-1 bg-white px-6 pt-28">
+        <StatusBar style="dark" />
       
       <View className="mb-10">
         <Text className="text-[2rem] font-bold text-gray-900">
@@ -136,7 +137,7 @@ export default function LoginScreen() {
           render={({ field: { onChange, value } }) => (
             <View>
               <View 
-                className={`flex-row items-center rounded-2xl px-4 py-6 border-2 ${
+                className={`flex-row items-center rounded-2xl px-4 py-5 border-2 ${
                   errors.email 
                     ? 'bg-red-300/30 border-red-800' 
                     : 'bg-[#F4F4F4] border-transparent'
@@ -175,7 +176,7 @@ export default function LoginScreen() {
           render={({ field: { onChange, value } }) => (
             <View>
               <View 
-                className={`flex-row items-center rounded-2xl px-4 py-6 border-2 ${
+                className={`flex-row items-center rounded-2xl px-4 py-5 border-2 ${
                   errors.password 
                     ? 'bg-red-300/30 border-red-800' 
                     : 'bg-[#F4F4F4] border-transparent'
@@ -216,7 +217,7 @@ export default function LoginScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity
-          className="mt-4 rounded-full bg-brand-cyan py-6 flex-row justify-center items-center"
+          className="mt-4 rounded-full bg-brand-cyan py-5 flex-row justify-center items-center"
           activeOpacity={0.8}
           onPress={handleSubmit(onSubmit)}
           disabled={isLoading}
@@ -244,7 +245,7 @@ export default function LoginScreen() {
 
       <View className="gap-4">
         <TouchableOpacity
-          className="flex-row items-center justify-center rounded-full bg-[#F4F4F4] py-6"
+          className="flex-row items-center justify-center rounded-full bg-[#F4F4F4] py-5"
           activeOpacity={0.8}
           onPress={handleGoogleSignIn}
           disabled={!request || isLoading}
@@ -257,7 +258,7 @@ export default function LoginScreen() {
 
         {Platform.OS === 'ios' && (
           <TouchableOpacity
-            className="flex-row items-center justify-center rounded-full bg-[#F4F4F4] py-6"
+            className="flex-row items-center justify-center rounded-full bg-[#F4F4F4] py-5"
             activeOpacity={0.8}
             onPress={handleAppleSignIn}
             disabled={isLoading}
@@ -270,7 +271,7 @@ export default function LoginScreen() {
         )}
       </View>
 
-      <View className="flex-1 justify-end pb-10 items-center">
+      <View className="flex-1 justify-end pb-8 items-center">
         <View className="flex-row items-center opacity-80">
            <Image 
              source={require('../../../assets/images/splash-icon.png')}
@@ -279,6 +280,7 @@ export default function LoginScreen() {
            />
         </View>
       </View>
-    </View>
+      </View>
+    </TouchableWithoutFeedback>
   );
 }

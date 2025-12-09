@@ -4,9 +4,10 @@ import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import { ActivityIndicator, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Keyboard, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
 import { z } from 'zod';
 import { SuccessModal } from '../../components/SuccessModal';
+import { sendOTP } from '../../services/apiService';
 
 type VerificationMethod = 'email' | 'sms';
 
@@ -49,10 +50,16 @@ export default function ForgotPasswordScreen() {
   const onSubmit = async (data: ForgotPasswordFormData) => {
     setIsLoading(true);
     
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    setIsLoading(false);
-    setShowSuccess(true);
+    try {
+      const value = method === 'email' ? data.email : data.phone;
+      await sendOTP(method, value!);
+      
+      setIsLoading(false);
+      setShowSuccess(true);
+    } catch (error: any) {
+      setIsLoading(false);
+      Alert.alert('Erro', error.message || 'Falha ao enviar código');
+    }
   };
 
   const handleSuccessClose = () => {
@@ -61,8 +68,9 @@ export default function ForgotPasswordScreen() {
   };
 
   return (
-    <View className="flex-1 bg-white">
-      <StatusBar style="dark" />
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+      <View className="flex-1 bg-white">
+        <StatusBar style="dark" />
       
       <View className="px-6 pt-8 pb-6">
         <TouchableOpacity 
@@ -234,7 +242,13 @@ export default function ForgotPasswordScreen() {
         onClose={handleSuccessClose}
         title="Código Enviado!"
         message={`Um código de verificação foi enviado para seu ${method === 'email' ? 'e-mail' : 'telefone'}.`}
+        navigateTo="/(auth)/verify-code"
+        navigationParams={{
+          method: method,
+          contact: method === 'email' ? control._formValues.email || '' : control._formValues.phone || ''
+        }}
       />
-    </View>
+      </View>
+    </TouchableWithoutFeedback>
   );
 }
