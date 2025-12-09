@@ -5,16 +5,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 interface AppState {
-  // Flags de primeira execução
   hasSeenSplash: boolean;
-  hasCompletedOnboarding: boolean; // Mantido para compatibilidade, caso queira adicionar onboarding depois
+  hasCompletedOnboarding: boolean;
   
-  // Preferências
   theme: ThemeMode;
   language: string;
   notificationsEnabled: boolean;
   
-  // Ações
   setHasSeenSplash: (value: boolean) => void;
   setHasCompletedOnboarding: (value: boolean) => void;
   setTheme: (theme: ThemeMode) => void;
@@ -25,7 +22,7 @@ interface AppState {
 
 const initialState = {
   hasSeenSplash: false,
-  hasCompletedOnboarding: true, // Sempre true, pois não temos onboarding no fluxo principal
+  hasCompletedOnboarding: true,
   theme: 'system' as ThemeMode,
   language: 'pt',
   notificationsEnabled: true,
@@ -61,9 +58,8 @@ export const useAppStore = create<AppState>()(
       },
     }),
     {
-      name: 'app-storage', // Nome da key no AsyncStorage
+      name: 'app-storage',
       storage: createJSONStorage(() => AsyncStorage),
     }
   )
 );
-

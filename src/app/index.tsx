@@ -9,11 +9,9 @@ export default function Index() {
     const { hasSeenSplash, setHasSeenSplash } = useAppStore();
 
     useEffect(() => {
-        // Sempre mostra splash na primeira vez que o componente carrega
         const timer = setTimeout(() => {
             setShowSplash(false);
             
-            // Marca que já viu a splash apenas na primeira execução do app
             if (!hasSeenSplash) {
                 setHasSeenSplash(true);
             }
@@ -26,7 +24,5 @@ export default function Index() {
         return <SplashScreen />;
     }
 
-    // Após splash, o useProtectedRoute no _layout redireciona automaticamente
-    // baseado no estado de autenticação e onboarding
     return null;
 }

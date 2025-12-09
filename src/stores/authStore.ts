@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
+import { MOCK_USERS } from '../config/auth.config';
 
 const secureStorage = {
   async setItem(key: string, value: string) {
@@ -25,6 +26,14 @@ export interface User {
   avatar?: string;
 }
 
+interface SocialLoginData {
+  email: string;
+  name: string;
+  id: string;
+  provider: 'google' | 'apple';
+  avatar?: string;
+}
+
 interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
@@ -32,6 +41,7 @@ interface AuthState {
   
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (name: string, email: string, password: string, role: UserRole) => Promise<void>;
+  signInWithSocial: (data: SocialLoginData) => Promise<void>;
   signOut: () => Promise<void>;
   updateUser: (user: Partial<User>) => void;
   
@@ -51,13 +61,19 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
         
         try {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          const validUser = MOCK_USERS.find(u => u.email === email && u.pass === password);
+
+          if (!validUser) {
+            throw new Error("Credenciais inválidas");
+          }
           
           const mockUser: User = {
-            id: '1',
-            name: 'João Silva',
-            email: email,
-            role: 'client',
+            id: Math.random().toString(36).substr(2, 9),
+            name: validUser.name,
+            email: validUser.email,
+            role: validUser.role,
           };
           
           const mockTokens = {
@@ -82,10 +98,10 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
         
         try {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 5000));
           
           const mockUser: User = {
-            id: '2',
+            id: Math.random().toString(36).substr(2, 9),
             name: name,
             email: email,
             role: role,
@@ -98,6 +114,38 @@ export const useAuthStore = create<AuthState>()(
           
           await get().setTokens(mockTokens.accessToken, mockTokens.refreshToken);
           
+          set({
+            user: mockUser,
+            isAuthenticated: true,
+            isLoading: false,
+          });
+        } catch (error) {
+          set({ isLoading: false });
+          throw error;
+        }
+      },
+
+      signInWithSocial: async (data: SocialLoginData) => {
+        set({ isLoading: true });
+        try {
+          // Simula verificação no backend
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+          const mockUser: User = {
+            id: data.id,
+            name: data.name,
+            email: data.email,
+            role: 'client', // Default role, em produção talvez precisasse perguntar
+            avatar: data.avatar
+          };
+
+          const mockTokens = {
+            accessToken: 'mock_social_token_' + Date.now(),
+            refreshToken: 'mock_social_refresh_' + Date.now(),
+          };
+
+          await get().setTokens(mockTokens.accessToken, mockTokens.refreshToken);
+
           set({
             user: mockUser,
             isAuthenticated: true,

@@ -1,15 +1,12 @@
-import { useEffect } from "react";
 import { Stack } from "expo-router";
-import { useProtectedRoute } from "../hooks/useProtectedRoute";
+import { useEffect } from "react";
 import "../global.css";
+import { useProtectedRoute } from "../hooks/useProtectedRoute";
 
 export default function RootLayout() {
-    // Hook de proteção de rotas - gerencia redirecionamentos
     useProtectedRoute();
 
     useEffect(() => {
-        // Inicialização de stores/hydration acontece aqui
-        // Os stores do Zustand com persist carregam automaticamente
     }, []);
 
     return (
