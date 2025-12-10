@@ -11,6 +11,8 @@ import { ActivityIndicator, Alert, Image, Keyboard, Platform, Text, TextInput, T
 import { z } from 'zod';
 import { GOOGLE_CONFIG } from '../../config/auth.config';
 import { useAuthStore } from '../../stores/authStore';
+import { useAppStore } from '../../stores/appStore';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -24,7 +26,25 @@ type LoginFormData = z.infer<typeof loginSchema>;
 export default function LoginScreen() {
   const router = useRouter();
   const { signIn, signInWithSocial, isLoading } = useAuthStore();
+  const { setHasSeenSplash } = useAppStore();
   const [error, setError] = useState<string | null>(null);
+
+  const handleResetSplash = () => {
+    Alert.alert(
+      'Reset Splash',
+      'Deseja resetar a splash screen?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Resetar',
+          onPress: () => {
+            setHasSeenSplash(false);
+            Alert.alert('Sucesso!', 'Feche e reabra o app para ver a splash novamente.');
+          },
+        },
+      ]
+    );
+  };
 
   const [request, response, promptAsync] = Google.useAuthRequest({
     clientId: GOOGLE_CONFIG.webClientId,
@@ -272,13 +292,23 @@ export default function LoginScreen() {
       </View>
 
       <View className="flex-1 justify-end pb-8 items-center">
-        <View className="flex-row items-center opacity-80">
-           <Image 
-             source={require('../../../assets/images/splash-icon.png')}
-             style={{ width: 160, height: 40, tintColor: '#444444', opacity: 0.4 }}
-             resizeMode="contain"
-           />
-        </View>
+        <TouchableOpacity 
+          onPress={async () => {
+            await AsyncStorage.clear();
+            Alert.alert('Storage Limpo!', 'Feche e reabra o app para ver a splash.', [
+              { text: 'OK', onPress: () => router.replace('/') }
+            ]);
+          }}
+          activeOpacity={0.6}
+        >
+          <View className="flex-row items-center opacity-80">
+             <Image 
+               source={require('../../../assets/images/splash-icon.png')}
+               style={{ width: 160, height: 40, tintColor: '#444444', opacity: 0.4 }}
+               resizeMode="contain"
+             />
+          </View>
+        </TouchableOpacity>
       </View>
       </View>
     </TouchableWithoutFeedback>

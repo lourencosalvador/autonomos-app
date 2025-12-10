@@ -1,51 +1,60 @@
+import { Feather, } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { BriefcaseBusiness } from 'lucide-react-native';
+import { Image, View } from 'react-native';
+import ProfileImage from '../../../assets/images/Profile.jpg';
+import { useAuthStore } from '../../stores/authStore';
 
 export default function TabsLayout() {
+  const { user } = useAuthStore();
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: '#00E7FF',
-        tabBarInactiveTintColor: '#9CA3AF',
+        tabBarInactiveTintColor: '#99999991',
         tabBarStyle: {
           backgroundColor: '#FFFFFF',
-          borderTopWidth: 1,
-          borderTopColor: '#E5E7EB',
-          height: 60,
-          paddingBottom: 8,
-          paddingTop: 8,
+          height: 100,
+          paddingBottom: 10,
+          paddingTop: 20,
+          elevation: 0,
+          shadowOpacity: 0,
+          borderTopColor: '#00E7FF38',
+          borderTopWidth: 1.5,
         },
         tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '600',
+          fontSize: 13,
+          fontWeight: '700',
+          marginTop: 4,
         },
       }}
     >
       <Tabs.Screen
         name="home"
         options={{
-          title: 'Início',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" size={size} color={color} />
+          title: 'Home',
+          tabBarIcon: ({ color, focused }) => (
+            <Feather name="home" size={24} color={color} strokeWidth={2} />
           ),
         }}
       />
       <Tabs.Screen
-        name="search"
+        name="messages"
         options={{
-          title: 'Buscar',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="search" size={size} color={color} />
+          title: 'Mensagens',
+          tabBarIcon: ({ color, focused }) => (
+            <Feather name="message-square" size={24} color={color} strokeWidth={2} />
           ),
         }}
       />
       <Tabs.Screen
-        name="bookings"
+        name="services"
         options={{
-          title: 'Agendamentos',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="calendar" size={size} color={color} />
+          title: 'Serviços',
+          tabBarIcon: ({ color, focused }) => (
+            <BriefcaseBusiness size={24} color={color} />
           ),
         }}
       />
@@ -53,12 +62,23 @@ export default function TabsLayout() {
         name="profile"
         options={{
           title: 'Perfil',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="person" size={size} color={color} />
+          tabBarIcon: ({ color, focused }) => (
+            <View className="h-8 w-8 rounded-full overflow-hidden " style={{ borderColor: focused ? '#00E7FF' : '#B8B8B8' }}>
+              {user?.avatar ? (
+                <Image 
+                  source={{ uri: user.avatar }} 
+                  className="h-full w-full"
+                  resizeMode="cover"
+                />
+              ) : (
+                <View className="h-full w-full items-center justify-center" style={{ backgroundColor: focused ? '#00E7FF' : '#B8B8B8' }}>
+                  <Image source={ProfileImage} className="h-full w-full" resizeMode="cover" />
+                </View>
+              )}
+            </View>
           ),
         }}
       />
     </Tabs>
   );
 }
-
