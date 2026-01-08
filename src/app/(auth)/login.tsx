@@ -1,20 +1,14 @@
 import { AntDesign, Ionicons } from '@expo/vector-icons';
 import { zodResolver } from '@hookform/resolvers/zod';
-import * as AppleAuthentication from 'expo-apple-authentication';
-import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { ActivityIndicator, Alert, Image, Keyboard, Platform, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
 import { z } from 'zod';
-import { GOOGLE_CONFIG } from '../../config/auth.config';
 import { useAuthStore } from '../../stores/authStore';
 import { useAppStore } from '../../stores/appStore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-WebBrowser.maybeCompleteAuthSession();
 
 const loginSchema = z.object({
   email: z.string().email("E-mail inválido."),
@@ -25,7 +19,7 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn, signInWithSocial, isLoading } = useAuthStore();
+  const { signIn, signInWithOAuth, isLoading } = useAuthStore();
   const { setHasSeenSplash } = useAppStore();
   const [error, setError] = useState<string | null>(null);
 
@@ -46,73 +40,25 @@ export default function LoginScreen() {
     );
   };
 
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    clientId: GOOGLE_CONFIG.webClientId,
-  });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      const { authentication } = response;
-      // Aqui você normalmente enviaria o authentication.accessToken para seu backend
-      // Para simular, vamos pegar os dados do usuário do Google
-      fetchUserInfo(authentication?.accessToken);
-    }
-  }, [response]);
-
-  async function fetchUserInfo(token?: string) {
-    if (!token) return;
+  const handleGoogleSignIn = async () => {
+    setError(null);
     try {
-      const response = await fetch('https://www.googleapis.com/userinfo/v2/me', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const user = await response.json();
-      await signInWithSocial({
-        email: user.email,
-        name: user.name,
-        id: user.id,
-        provider: 'google',
-        avatar: user.picture
-      });
-    } catch (e) {
-      Alert.alert('Erro', 'Falha ao conectar com Google');
+      await signInWithOAuth('google');
+    } catch (e: any) {
+      Alert.alert('Erro', e?.message || 'Falha ao conectar com Google');
     }
-  }
-
-  const handleGoogleSignIn = () => {
-    promptAsync();
   };
 
   const handleAppleSignIn = async () => {
+    setError(null);
     try {
-      const credential = await AppleAuthentication.signInAsync({
-        requestedScopes: [
-          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-          AppleAuthentication.AppleAuthenticationScope.EMAIL,
-        ],
-      });
-      
-      // O email só vem na primeira vez, então em produção precisa lidar com isso
-      const email = credential.email || "apple_user@hidden.com"; 
-      const name = credential.fullName?.givenName 
-        ? `${credential.fullName.givenName} ${credential.fullName.familyName || ''}`
-        : "Usuário Apple";
-
-      await signInWithSocial({
-        email: email,
-        name: name,
-        id: credential.user,
-        provider: 'apple'
-      });
+      await signInWithOAuth('apple');
     } catch (e: any) {
-      if (e.code === 'ERR_CANCELED') {
-        // Usuário cancelou, não faz nada
-      } else {
-        Alert.alert('Erro', 'Falha ao conectar com Apple');
-      }
+      Alert.alert('Erro', e?.message || 'Falha ao conectar com Apple');
     }
   };
 
-  const { control, handleSubmit, formState: { errors } } = useForm<LoginFormData>({
+  const { control, handleSubmit, formState: { errors }, setValue } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
       email: '',
@@ -255,6 +201,8 @@ export default function LoginScreen() {
             {error}
           </Text>
         )}
+
+        {/* removido: logins mock de debug */}
       </View>
 
       <View className="my-8 flex-row items-center">
@@ -268,7 +216,7 @@ export default function LoginScreen() {
           className="flex-row items-center justify-center rounded-full bg-[#F4F4F4] py-5"
           activeOpacity={0.8}
           onPress={handleGoogleSignIn}
-          disabled={!request || isLoading}
+          disabled={isLoading}
         >
           <AntDesign name="google" size={27} color="#DB4437" style={{ marginRight: 12 }} />
           <Text className="text-[16px] font-bold text-gray-600">

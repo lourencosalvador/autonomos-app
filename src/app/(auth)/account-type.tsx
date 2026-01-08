@@ -1,21 +1,30 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { MotiView } from 'moti';
 import { useState } from 'react';
 import { Text, TouchableOpacity, View } from 'react-native';
 import type { UserRole } from '../../stores/authStore';
+import { useAuthStore } from '../../stores/authStore';
 
 export default function AccountTypeScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string }>();
   const [selectedType, setSelectedType] = useState<UserRole | null>(null);
+  const setRole = useAuthStore((s) => s.setRole);
+  const isLoading = useAuthStore((s) => s.isLoading);
 
   const handleContinue = () => {
     if (selectedType) {
-      router.push({
-        pathname: '/(auth)/register',
-        params: { accountType: selectedType }
-      });
+      // Modo "complete": utilizador já autenticado (Google/Apple) e precisa escolher role.
+      if (params.mode === 'complete') {
+        setRole(selectedType)
+          .then(() => router.replace('/(tabs)/home'))
+          .catch(() => {});
+        return;
+      }
+
+      router.push({ pathname: '/(auth)/register', params: { accountType: selectedType } });
     }
   };
 
@@ -99,6 +108,7 @@ export default function AccountTypeScreen() {
             className="rounded-full bg-brand-cyan py-4"
             activeOpacity={0.8}
             onPress={handleContinue}
+            disabled={isLoading}
           >
             <Text className="text-center text-lg font-bold text-white">
               Continuar

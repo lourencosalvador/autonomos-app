@@ -20,6 +20,20 @@ npm run dev
 
 O servidor vai rodar em `http://localhost:8081`.
 
+## 3.1 Variáveis de ambiente (obrigatório)
+
+Crie um arquivo `.env` dentro da pasta `server/`:
+
+```bash
+PORT=8081
+RESEND_API_KEY=re_xxx
+TWILIO_ACCOUNT_SID=ACxxx
+TWILIO_AUTH_TOKEN=xxx
+TWILIO_VERIFY_SID=VAxxx
+STREAM_API_KEY=xxx
+STREAM_API_SECRET=xxx
+```
+
 ## 4. No app mobile, as requisições vão automaticamente para essa URL!
 
 O frontend já está configurado para usar `http://localhost:8081` quando em desenvolvimento.

@@ -1,165 +1,380 @@
-import { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, Alert, ScrollView, Keyboard, TouchableWithoutFeedback } from 'react-native';
+import { AntDesign, Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { ChevronDown } from 'lucide-react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Keyboard, Modal, Platform, Pressable, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
+import { Flag } from 'react-native-country-picker-modal';
+import PhoneInput from 'react-native-phone-number-input';
 import { useAuthStore, UserRole } from '../../stores/authStore';
-import { Ionicons } from '@expo/vector-icons';
+
+const fieldClass = 'rounded-2xl bg-gray-100 px-5 py-4';
 
 export default function RegisterScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ accountType?: UserRole }>();
-  const { signUp, isLoading } = useAuthStore();
-  
+  const { signUp, signInWithOAuth, isLoading } = useAuthStore();
+
+  const [role, setRole] = useState<UserRole>('client');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('client');
+  const [phoneRaw, setPhoneRaw] = useState('');
+  const [phoneFormatted, setPhoneFormatted] = useState('');
+  const [gender, setGender] = useState<'Masculino' | 'Feminino' | 'Outro' | ''>('');
+  const [birthDate, setBirthDate] = useState<Date | null>(null);
+  const [dateOpen, setDateOpen] = useState(false);
+  const [genderOpen, setGenderOpen] = useState(false);
+  const [workArea, setWorkArea] = useState('');
+  const [workOpen, setWorkOpen] = useState(false);
 
   useEffect(() => {
-    if (params.accountType) {
-      setRole(params.accountType);
-    }
+    if (params.accountType) setRole(params.accountType);
   }, [params.accountType]);
+
+  const birthLabel = useMemo(() => {
+    if (!birthDate) return '';
+    return birthDate.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  }, [birthDate]);
+
+  const workOptions = useMemo(
+    () => ['Fotografia', 'Design', 'Construção', 'Cabeleireiro', 'Mecânica', 'Limpeza', 'Marketing'],
+    []
+  );
+
+  const handleGoogle = async () => {
+    try {
+      await signInWithOAuth('google');
+    } catch (e: any) {
+      Alert.alert('Erro', e?.message || 'Falha ao conectar com Google');
+    }
+  };
+
+  const handleApple = async () => {
+    try {
+      await signInWithOAuth('apple');
+    } catch (e: any) {
+      Alert.alert('Erro', e?.message || 'Falha ao conectar com Apple');
+    }
+  };
 
   const handleRegister = async () => {
     if (!name || !email || !password) {
-      Alert.alert('Erro', 'Por favor, preencha todos os campos');
+      Alert.alert('Erro', 'Preencha os campos obrigatórios');
       return;
     }
-
     try {
       await signUp(name, email, password, role);
-    } catch (error) {
-      Alert.alert('Erro', 'Falha ao criar conta. Tente novamente.');
+      // Se não foi autenticado automaticamente, manda para login (sem falar de confirmação por email).
+      const authed = useAuthStore.getState().isAuthenticated;
+      if (!authed) {
+        Alert.alert('Conta criada', 'Sua conta foi criada. Agora faça login.', [
+          { text: 'OK', onPress: () => router.replace('/(auth)/login') },
+        ]);
+      }
+    } catch (e: any) {
+      Alert.alert('Erro', e?.message || 'Não foi possível criar a conta.');
     }
   };
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-      <ScrollView className="flex-1 bg-white">
+      <View className="flex-1 bg-white">
         <StatusBar style="dark" />
-      
-      <View className="flex-1 px-6 pt-16">
-        <TouchableOpacity
-          onPress={() => router.back()}
-          className="mb-6 flex-row items-center"
-          activeOpacity={0.7}
-        >
-          <Ionicons name="arrow-back" size={24} color="#111827" />
-          <Text className="ml-2 text-base font-medium text-gray-900">
-            Voltar
-          </Text>
-        </TouchableOpacity>
 
-        <View className="mb-8">
-          <Text className="text-3xl font-bold text-gray-900">
-            Criar Conta
-          </Text>
-          <Text className="mt-2 text-base text-gray-600">
-            Preencha seus dados para começar como{' '}
-            <Text className="font-semibold text-brand-cyan">
-              {role === 'client' ? 'Cliente' : 'Prestador'}
-            </Text>
-          </Text>
-        </View>
+        <FlatList
+          data={[]}
+          keyExtractor={() => 'empty'}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: 28 }}
+          ListHeaderComponent={
+            <View className="px-6 pt-16">
+              <TouchableOpacity onPress={() => router.back()} activeOpacity={0.7} className="h-10 w-10 items-start justify-center">
+                <Ionicons name="arrow-back" size={24} color="#111827" />
+              </TouchableOpacity>
 
-        <View className="gap-4">
-          <View>
-            <Text className="mb-2 text-sm font-medium text-gray-700">
-              Nome completo
-            </Text>
-            <TextInput
-              className="rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-base"
-              placeholder="João Silva"
-              placeholderTextColor="#9CA3AF"
-              value={name}
-              onChangeText={setName}
-              editable={!isLoading}
-            />
-          </View>
+              <Text className="mt-3 text-[28px] font-extrabold text-gray-900">Criar Conta</Text>
 
-          <View>
-            <Text className="mb-2 text-sm font-medium text-gray-700">
-              Email
-            </Text>
-            <TextInput
-              className="rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-base"
-              placeholder="seu@email.com"
-              placeholderTextColor="#9CA3AF"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!isLoading}
-            />
-          </View>
-
-          <View>
-            <Text className="mb-2 text-sm font-medium text-gray-700">
-              Senha
-            </Text>
-            <TextInput
-              className="rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-base"
-              placeholder="••••••••"
-              placeholderTextColor="#9CA3AF"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              editable={!isLoading}
-            />
-          </View>
-
-          <View className="rounded-2xl border-2 border-brand-cyan/20 bg-brand-cyan/5 p-4">
-            <View className="flex-row items-center">
-              <View className="mr-3 h-12 w-12 items-center justify-center rounded-xl bg-brand-cyan">
-                <Ionicons 
-                  name={role === 'professional' ? 'briefcase' : 'person'} 
-                  size={24} 
-                  color="white"
-                />
+              <View className="mt-1 flex-row items-center gap-1">
+                <Text className="text-[13px] text-gray-500">Já possui uma conta?</Text>
+                <TouchableOpacity onPress={() => router.replace('/(auth)/login')} activeOpacity={0.7}>
+                  <Text className="text-[13px] font-extrabold text-gray-900">Entrar!</Text>
+                </TouchableOpacity>
               </View>
-              <View className="flex-1">
-                <Text className="text-xs font-medium text-gray-600">
-                  Tipo de conta
-                </Text>
-                <Text className="text-lg font-bold text-gray-900">
-                  {role === 'client' ? 'Cliente' : 'Prestador'}
-                </Text>
-              </View>
+
+              <View className="mt-8 gap-4">
+            <View className={fieldClass}>
+              <TextInput
+                placeholder="Nome Completo"
+                placeholderTextColor="#9CA3AF"
+                value={name}
+                onChangeText={setName}
+                editable={!isLoading}
+                className="text-[14px]"
+                style={{ color: '#000000' }}
+              />
+            </View>
+
+            <View className={fieldClass}>
+              <TextInput
+                placeholder="E-mail"
+                placeholderTextColor="#9CA3AF"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isLoading}
+                className="text-[14px]"
+                style={{ color: '#000000' }}
+              />
+            </View>
+
+            <View className="flex-row gap-4">
               <TouchableOpacity
-                onPress={() => router.back()}
-                className="rounded-lg bg-gray-100 px-3 py-2"
+                activeOpacity={0.85}
+                onPress={() => setGenderOpen(true)}
+                className="flex-1 flex-row items-center justify-between rounded-2xl bg-gray-100 px-5 py-4"
               >
-                <Text className="text-xs font-medium text-gray-700">
-                  Alterar
+                <Text className="text-[14px]" style={{ color: gender ? '#000000' : '#9CA3AF' }}>
+                  {gender || 'Gênero'}
                 </Text>
+                <ChevronDown size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => setDateOpen(true)}
+                className="flex-1 flex-row items-center justify-between rounded-2xl bg-gray-100 px-5 py-4"
+              >
+                <Text className="text-[14px]" style={{ color: birthLabel ? '#000000' : '#9CA3AF' }}>
+                  {birthLabel || 'dd/mm/aa'}
+                </Text>
+                <Ionicons name="calendar-outline" size={18} color="#9CA3AF" />
               </TouchableOpacity>
             </View>
-          </View>
 
-          <TouchableOpacity
-            className="mt-6 rounded-full bg-brand-cyan py-4"
-            activeOpacity={0.8}
-            onPress={handleRegister}
-            disabled={isLoading}
-          >
-            <Text className="text-center text-base font-semibold text-white">
-              {isLoading ? 'Criando conta...' : 'Criar Conta'}
-            </Text>
-          </TouchableOpacity>
+            <View className="rounded-2xl bg-gray-100 px-4 py-2">
+              <PhoneInput
+                defaultCode="AO"
+                layout="first"
+                value={phoneRaw}
+                onChangeText={setPhoneRaw}
+                onChangeFormattedText={setPhoneFormatted}
+                placeholder="Número de Telefone"
+                countryPickerProps={{
+                  withEmoji: false,
+                  renderFlagButton: (p: any) => (
+                    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                      <Flag countryCode={p.countryCode} withEmoji={false} />
+                    </View>
+                  ),
+                }}
+                containerStyle={{
+                  width: '100%',
+                  backgroundColor: 'transparent',
+                  borderRadius: 16,
+                  height: 56,
+                }}
+                textContainerStyle={{
+                  backgroundColor: 'transparent',
+                  borderRadius: 16,
+                  paddingVertical: 0,
+                  paddingHorizontal: 0,
+                }}
+                textInputStyle={{
+                  color: '#000000',
+                  fontSize: 14,
+                  paddingVertical: 0,
+                }}
+                codeTextStyle={{ color: '#111827', fontSize: 14, fontWeight: '600' }}
+                flagButtonStyle={{ width: 56 }}
+                withDarkTheme={false}
+                withShadow={false}
+                disabled={isLoading}
+              />
+            </View>
 
-          <View className="mb-8 mt-4 flex-row justify-center gap-2">
-            <Text className="text-gray-600">Já tem conta?</Text>
-            <TouchableOpacity onPress={() => router.back()}>
-              <Text className="font-semibold text-brand-cyan">
-                Fazer login
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => setWorkOpen(true)}
+              className="flex-row items-center justify-between rounded-2xl bg-gray-100 px-5 py-4"
+            >
+              <Text className="text-[14px]" style={{ color: workArea ? '#000000' : '#9CA3AF' }}>
+                {workArea || 'Área de Trabalho'}
               </Text>
+              <ChevronDown size={18} color="#9CA3AF" />
             </TouchableOpacity>
+
+            <View className={fieldClass}>
+              <TextInput
+                placeholder="Senha"
+                placeholderTextColor="#9CA3AF"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+                editable={!isLoading}
+                className="text-[14px]"
+                style={{ color: '#000000' }}
+              />
+            </View>
+
+            <TouchableOpacity
+              className="mt-2 rounded-full bg-brand-cyan py-5 flex-row items-center justify-center"
+              activeOpacity={0.85}
+              onPress={handleRegister}
+              disabled={isLoading}
+            >
+              {isLoading ? <ActivityIndicator color="white" className="mr-2" /> : null}
+              <Text className="text-[16px] font-bold text-white">{isLoading ? 'Entrando...' : 'Entrar'}</Text>
+            </TouchableOpacity>
+
+            <View className="my-4 flex-row items-center">
+              <View className="h-[1px] flex-1 bg-gray-200" />
+              <Text className="mx-10 text-[13px] font-bold text-gray-500">Ou</Text>
+              <View className="h-[1px] flex-1 bg-gray-200" />
+            </View>
+
+            <View className="flex-row gap-4">
+              <TouchableOpacity
+                className="flex-1 flex-row items-center justify-center rounded-full bg-[#F4F4F4] py-4"
+                activeOpacity={0.85}
+                onPress={handleGoogle}
+                disabled={isLoading}
+              >
+                <AntDesign name="google" size={22} color="#DB4437" style={{ marginRight: 10 }} />
+                <Text className="text-[14px] font-bold text-gray-600">Google</Text>
+              </TouchableOpacity>
+
+              {Platform.OS === 'ios' && (
+                <TouchableOpacity
+                  className="flex-1 flex-row items-center justify-center rounded-full bg-[#F4F4F4] py-4"
+                  activeOpacity={0.85}
+                  onPress={handleApple}
+                  disabled={isLoading}
+                >
+                  <AntDesign name="apple" size={22} color="#000000" style={{ marginRight: 10 }} />
+                  <Text className="text-[14px] font-bold text-gray-600">Apple</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
-        </View>
+            </View>
+          }
+        />
+
+        <Modal visible={genderOpen} transparent animationType="fade" onRequestClose={() => setGenderOpen(false)}>
+          <Pressable className="flex-1 bg-black/40 px-6" onPress={() => setGenderOpen(false)}>
+            <Pressable
+              className="mt-40 rounded-3xl bg-white p-5"
+              onPress={() => {}}
+              style={{
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 10 },
+                shadowOpacity: 0.12,
+                shadowRadius: 16,
+                elevation: 8,
+              }}
+            >
+              <Text className="text-[16px] font-extrabold text-gray-900">Selecionar Gênero</Text>
+              <Text className="mt-1 text-[12px] text-gray-400">Escolha uma opção</Text>
+
+              {(['Masculino', 'Feminino', 'Outro'] as const).map((opt) => {
+                const selected = gender === opt;
+                return (
+                  <TouchableOpacity
+                    key={opt}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setGender(opt);
+                      setGenderOpen(false);
+                    }}
+                    className="mt-4 flex-row items-center justify-between rounded-2xl bg-gray-100 px-5 py-4"
+                    style={selected ? { borderWidth: 1.5, borderColor: '#00E7FF' } : undefined}
+                  >
+                    <Text className="text-[14px] text-gray-900">{opt}</Text>
+                    <View
+                      className="h-5 w-5 rounded-full"
+                      style={{
+                        borderWidth: 2,
+                        borderColor: selected ? '#00E7FF' : '#D1D5DB',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      {selected ? <View className="h-2.5 w-2.5 rounded-full bg-brand-cyan" /> : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        <Modal visible={workOpen} transparent animationType="fade" onRequestClose={() => setWorkOpen(false)}>
+          <Pressable className="flex-1 bg-black/40 px-6" onPress={() => setWorkOpen(false)}>
+            <Pressable
+              className="mt-44 rounded-3xl bg-white p-5"
+              onPress={() => {}}
+              style={{
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 10 },
+                shadowOpacity: 0.12,
+                shadowRadius: 16,
+                elevation: 8,
+              }}
+            >
+              <Text className="text-[16px] font-extrabold text-gray-900">Área de Trabalho</Text>
+              <Text className="mt-1 text-[12px] text-gray-400">Selecione uma opção</Text>
+
+              {workOptions.map((opt) => {
+                const selected = workArea === opt;
+                return (
+                  <TouchableOpacity
+                    key={opt}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setWorkArea(opt);
+                      setWorkOpen(false);
+                    }}
+                    className="mt-4 flex-row items-center justify-between rounded-2xl bg-gray-100 px-5 py-4"
+                    style={selected ? { borderWidth: 1.5, borderColor: '#00E7FF' } : undefined}
+                  >
+                    <Text className="text-[14px] text-gray-900">{opt}</Text>
+                    <View
+                      className="h-5 w-5 rounded-full"
+                      style={{
+                        borderWidth: 2,
+                        borderColor: selected ? '#00E7FF' : '#D1D5DB',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      {selected ? <View className="h-2.5 w-2.5 rounded-full bg-brand-cyan" /> : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {dateOpen ? (
+          <DateTimePicker
+            value={birthDate ?? new Date(2000, 0, 1)}
+            mode="date"
+            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            maximumDate={new Date()}
+            onChange={(_, date) => {
+              if (Platform.OS !== 'ios') setDateOpen(false);
+              if (date) setBirthDate(date);
+              if (Platform.OS === 'ios') setDateOpen(false);
+            }}
+          />
+        ) : null}
       </View>
-      </ScrollView>
     </TouchableWithoutFeedback>
   );
 }

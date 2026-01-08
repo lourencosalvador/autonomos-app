@@ -5,6 +5,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { ActivityIndicator, Alert, Keyboard, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
+import PhoneInput from 'react-native-phone-number-input';
+import { Flag } from 'react-native-country-picker-modal';
 import { z } from 'zod';
 import { SuccessModal } from '../../components/SuccessModal';
 import { sendOTP } from '../../services/apiService';
@@ -13,7 +15,11 @@ type VerificationMethod = 'email' | 'sms';
 
 const forgotPasswordSchema = z.object({
   email: z.string().email("E-mail inválido.").optional().or(z.literal('')),
-  phone: z.string().min(9, "Telefone inválido.").optional().or(z.literal('')),
+  phone: z.string().optional().or(z.literal('')).refine((val) => {
+    if (!val) return true;
+    const digits = val.replace(/\D/g, '');
+    return digits.length >= 9;
+  }, "Telefone inválido."),
 }).refine((data) => {
   return data.email || data.phone;
 }, {
@@ -202,14 +208,48 @@ export default function ForgotPasswordScreen() {
                       : 'bg-gray-100 border-transparent'
                   }`}
                 >
-                  <TextInput
-                    className={`text-[16px] ${errors.phone ? 'text-red-900' : 'text-gray-700'}`}
-                    placeholder="+351 912 345 678"
-                    placeholderTextColor={errors.phone ? '#991B1B' : '#9CA3AF'}
-                    value={value}
-                    onChangeText={onChange}
-                    keyboardType="phone-pad"
-                    editable={!isLoading}
+                  <PhoneInput
+                    defaultCode="AO"
+                    layout="first"
+                    value={(value || '').replace(/^\+244/, '')}
+                    onChangeText={() => {}}
+                    onChangeFormattedText={(formatted) => onChange(formatted)}
+                    placeholder="Inserir número"
+                    countryPickerProps={{
+                      withEmoji: false,
+                      renderFlagButton: (props: any) => (
+                        <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                          <Flag countryCode={props.countryCode} withEmoji={false} />
+                        </View>
+                      ),
+                    }}
+                    containerStyle={{
+                      width: '100%',
+                      backgroundColor: 'transparent',
+                      borderRadius: 16,
+                      height: 56,
+                    }}
+                    textContainerStyle={{
+                      backgroundColor: 'transparent',
+                      borderRadius: 16,
+                      paddingVertical: 0,
+                      paddingHorizontal: 0,
+                    }}
+                    textInputStyle={{
+                      color: errors.phone ? '#7F1D1D' : '#000000',
+                      fontSize: 16,
+                      paddingVertical: 0,
+                    }}
+                    codeTextStyle={{
+                      color: errors.phone ? '#7F1D1D' : '#111827',
+                      fontSize: 16,
+                      fontWeight: '600',
+                    }}
+                    flagButtonStyle={{ width: 56 }}
+                    withShadow={false}
+                    withDarkTheme={false}
+                    disableArrowIcon={false}
+                    disabled={isLoading}
                   />
                 </View>
                 {errors.phone && (
