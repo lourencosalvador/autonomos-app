@@ -15,21 +15,10 @@ export function useProtectedRoute() {
       const inAuthGroup = segments[0] === '(auth)';
       const inTabsGroup = segments[0] === '(tabs)';
       const inWelcome = segments[0] === '(auth)' && segments[1] === 'welcome';
-      const inAccountType = segments[0] === '(auth)' && segments[1] === 'account-type';
       const inIndex = segments.length === 0 || segments[0] === 'index';
-      const needsRole = !!(isAuthenticated && user && !user.role);
 
       if (!hasSeenSplash && !inIndex) {
         router.replace('/');
-        return;
-      }
-
-      // Se está autenticado mas ainda não escolheu role (Google/Apple ou profile antigo),
-      // força a tela de escolha para completar o perfil.
-      if (needsRole) {
-        if (!inAccountType) {
-          router.replace('/(auth)/account-type?mode=complete');
-        }
         return;
       }
 
@@ -52,6 +41,6 @@ export function useProtectedRoute() {
     }, 150);
 
     return () => clearTimeout(timeout);
-  }, [isAuthenticated, user?.role, hasSeenSplash, segments]);
+  }, [isAuthenticated, hasSeenSplash, segments]);
 }
 

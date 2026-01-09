@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { useAuthStore } from '../../stores/authStore';
 import { useAppStore } from '../../stores/appStore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { toast } from '../../lib/sonner';
 
 const loginSchema = z.object({
   email: z.string().email("E-mail inválido."),
@@ -24,37 +25,39 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const handleResetSplash = () => {
-    Alert.alert(
-      'Reset Splash',
-      'Deseja resetar a splash screen?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Resetar',
-          onPress: () => {
-            setHasSeenSplash(false);
-            Alert.alert('Sucesso!', 'Feche e reabra o app para ver a splash novamente.');
-          },
+    Alert.alert('Reset Splash', 'Deseja resetar a splash screen?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Resetar',
+        onPress: () => {
+          setHasSeenSplash(false);
+          toast.success('Splash resetada. Feche e reabra o app.');
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const handleGoogleSignIn = async () => {
     setError(null);
+    const id = toast.loading('Conectando com Google...');
     try {
       await signInWithOAuth('google');
+      toast.dismiss(id);
+      const name = (useAuthStore.getState().user?.name || '').trim();
+      toast.success(name ? `Bem vindo ${name} 💙` : 'Bem vindo 💙');
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Falha ao conectar com Google');
+      toast.dismiss(id);
+      toast.error(e?.message || 'Falha ao conectar com Google');
     }
   };
 
   const handleAppleSignIn = async () => {
     setError(null);
     try {
-      await signInWithOAuth('apple');
+      toast('Entrar com Apple está em manutenção.');
+      return;
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Falha ao conectar com Apple');
+      toast.error(e?.message || 'Falha ao conectar com Apple');
     }
   };
 
@@ -66,12 +69,24 @@ export default function LoginScreen() {
     }
   });
 
+  const handleDebugLogin = (email: string, password: string) => {
+    setValue('email', email, { shouldValidate: true });
+    setValue('password', password, { shouldValidate: true });
+    handleSubmit(onSubmit)();
+  };
+
   const onSubmit = async (data: LoginFormData) => {
     setError(null);
+    const id = toast.loading('Entrando...');
     try {
       await signIn(data.email, data.password);
+      toast.dismiss(id);
+      const name = (useAuthStore.getState().user?.name || '').trim();
+      toast.success(name ? `Bem vindo ${name} 💙` : 'Bem vindo 💙');
     } catch (err) {
       setError('Credenciais inválidas ou erro no servidor.');
+      toast.dismiss(id);
+      toast.error('Credenciais inválidas.');
     }
   };
 
@@ -202,7 +217,29 @@ export default function LoginScreen() {
           </Text>
         )}
 
-        {/* removido: logins mock de debug */}
+        <View className="mt-2 items-center gap-2">
+          <TouchableOpacity
+            onPress={() => handleDebugLogin('makendragomes@gmail.com', 'make1234')}
+            activeOpacity={0.7}
+            disabled={isLoading}
+            className="items-center"
+          >
+            <Text className="text-[12px] font-bold text-gray-400">
+              Login Prestador (debug)
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => handleDebugLogin('lourencocardoso007@gmail.com', 'lorrys1234')}
+            activeOpacity={0.7}
+            disabled={isLoading}
+            className="items-center"
+          >
+            <Text className="text-[12px] font-bold text-gray-400">
+              Login Cliente (debug)
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View className="my-8 flex-row items-center">

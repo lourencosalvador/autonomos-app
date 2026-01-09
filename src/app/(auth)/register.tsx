@@ -1,13 +1,13 @@
 import { AntDesign, Ionicons } from '@expo/vector-icons';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronDown } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Keyboard, Modal, Platform, Pressable, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
-import { Flag } from 'react-native-country-picker-modal';
-import PhoneInput from 'react-native-phone-number-input';
+import { ActivityIndicator, FlatList, Keyboard, Modal, Platform, Pressable, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
+import PhoneInput, { ICountry, isValidPhoneNumber } from 'react-native-international-phone-number';
 import { useAuthStore, UserRole } from '../../stores/authStore';
+import { toast } from '../../lib/sonner';
+import { DatePickerModal } from '../../components/DatePickerModal';
 
 const fieldClass = 'rounded-2xl bg-gray-100 px-5 py-4';
 
@@ -20,8 +20,8 @@ export default function RegisterScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phoneRaw, setPhoneRaw] = useState('');
-  const [phoneFormatted, setPhoneFormatted] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState<ICountry | null>(null);
   const [gender, setGender] = useState<'Masculino' | 'Feminino' | 'Outro' | ''>('');
   const [birthDate, setBirthDate] = useState<Date | null>(null);
   const [dateOpen, setDateOpen] = useState(false);
@@ -38,43 +38,62 @@ export default function RegisterScreen() {
     return birthDate.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit', year: '2-digit' });
   }, [birthDate]);
 
+  const birthIso = useMemo(() => {
+    return birthDate ? birthDate.toISOString().slice(0, 10) : null;
+  }, [birthDate]);
+
   const workOptions = useMemo(
     () => ['Fotografia', 'Design', 'Construção', 'Cabeleireiro', 'Mecânica', 'Limpeza', 'Marketing'],
     []
   );
 
   const handleGoogle = async () => {
+    const id = toast.loading('Conectando com Google...');
     try {
-      await signInWithOAuth('google');
+      // Fluxo de cadastro com Google: já salva o tipo de conta escolhido (role) no profile.
+      await signInWithOAuth('google', { role });
+      toast.dismiss(id);
+      toast.success('Conta criada com Google.');
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Falha ao conectar com Google');
+      toast.dismiss(id);
+      toast.error(e?.message || 'Falha ao conectar com Google');
     }
   };
 
   const handleApple = async () => {
     try {
-      await signInWithOAuth('apple');
+      toast('Criar conta com Apple está em manutenção.');
+      return;
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Falha ao conectar com Apple');
+      toast.error(e?.message || 'Falha ao conectar com Apple');
     }
   };
 
   const handleRegister = async () => {
     if (!name || !email || !password) {
-      Alert.alert('Erro', 'Preencha os campos obrigatórios');
+      toast.error('Preencha os campos obrigatórios.');
       return;
     }
+    if (phoneNumber && selectedCountry && !isValidPhoneNumber(phoneNumber, selectedCountry)) {
+      toast.error('Número de telefone inválido.');
+      return;
+    }
+    const id = toast.loading('Criando conta...');
     try {
       await signUp(name, email, password, role);
       // Se não foi autenticado automaticamente, manda para login (sem falar de confirmação por email).
       const authed = useAuthStore.getState().isAuthenticated;
       if (!authed) {
-        Alert.alert('Conta criada', 'Sua conta foi criada. Agora faça login.', [
-          { text: 'OK', onPress: () => router.replace('/(auth)/login') },
-        ]);
+        toast.dismiss(id);
+        toast.success('Conta criada. Agora faça login.');
+        router.replace('/(auth)/login');
+        return;
       }
+      toast.dismiss(id);
+      toast.success('Conta criada.');
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Não foi possível criar a conta.');
+      toast.dismiss(id);
+      toast.error(e?.message || 'Não foi possível criar a conta.');
     }
   };
 
@@ -158,42 +177,37 @@ export default function RegisterScreen() {
 
             <View className="rounded-2xl bg-gray-100 px-4 py-2">
               <PhoneInput
-                defaultCode="AO"
-                layout="first"
-                value={phoneRaw}
-                onChangeText={setPhoneRaw}
-                onChangeFormattedText={setPhoneFormatted}
+                value={phoneNumber}
+                onChangePhoneNumber={setPhoneNumber}
+                selectedCountry={selectedCountry}
+                onChangeSelectedCountry={setSelectedCountry}
+                defaultCountry="AO"
+                language="por"
+                theme="light"
                 placeholder="Número de Telefone"
-                countryPickerProps={{
-                  withEmoji: false,
-                  renderFlagButton: (p: any) => (
-                    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-                      <Flag countryCode={p.countryCode} withEmoji={false} />
-                    </View>
-                  ),
-                }}
-                containerStyle={{
-                  width: '100%',
-                  backgroundColor: 'transparent',
-                  borderRadius: 16,
-                  height: 56,
-                }}
-                textContainerStyle={{
-                  backgroundColor: 'transparent',
-                  borderRadius: 16,
-                  paddingVertical: 0,
-                  paddingHorizontal: 0,
-                }}
-                textInputStyle={{
-                  color: '#000000',
-                  fontSize: 14,
-                  paddingVertical: 0,
-                }}
-                codeTextStyle={{ color: '#111827', fontSize: 14, fontWeight: '600' }}
-                flagButtonStyle={{ width: 56 }}
-                withDarkTheme={false}
-                withShadow={false}
+                phoneInputPlaceholderTextColor="#9CA3AF"
+                phoneInputSelectionColor="#00E7FF"
                 disabled={isLoading}
+                modalType="bottomSheet"
+                phoneInputStyles={{
+                  container: {
+                    backgroundColor: 'transparent',
+                    borderWidth: 0,
+                    minHeight: 56,
+                    alignItems: 'center',
+                    justifyContent: 'flex-start',
+                  },
+                  flagContainer: {
+                    backgroundColor: 'transparent',
+                    paddingHorizontal: 10,
+                    borderTopLeftRadius: 16,
+                    borderBottomLeftRadius: 16,
+                  },
+                  caret: { color: '#9CA3AF', fontSize: 14 },
+                  divider: { backgroundColor: '#E5E7EB', marginLeft: 10, marginRight: 10, height: '55%' },
+                  callingCode: { color: '#111827', fontWeight: '800', fontSize: 14, minWidth: 54, textAlign: 'center' },
+                  input: { color: '#111827', fontSize: 14, fontWeight: '700', paddingHorizontal: 12, paddingVertical: 0 },
+                }}
               />
             </View>
 
@@ -361,19 +375,16 @@ export default function RegisterScreen() {
           </Pressable>
         </Modal>
 
-        {dateOpen ? (
-          <DateTimePicker
-            value={birthDate ?? new Date(2000, 0, 1)}
-            mode="date"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            maximumDate={new Date()}
-            onChange={(_, date) => {
-              if (Platform.OS !== 'ios') setDateOpen(false);
-              if (date) setBirthDate(date);
-              if (Platform.OS === 'ios') setDateOpen(false);
-            }}
-          />
-        ) : null}
+        <DatePickerModal
+          open={dateOpen}
+          title="Data de nascimento"
+          value={birthIso}
+          onClose={() => setDateOpen(false)}
+          onConfirm={(iso) => {
+            setBirthDate(new Date(iso));
+            setDateOpen(false);
+          }}
+        />
       </View>
     </TouchableWithoutFeedback>
   );

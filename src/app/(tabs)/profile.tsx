@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { getRandomPhotos } from '../../services/unsplashService';
 import { useAuthStore } from '../../stores/authStore';
+import { toast } from '../../lib/sonner';
 
 const ProfileImage = require('../../../assets/images/Profile.jpg');
 
@@ -264,7 +265,7 @@ function ProfessionalProfile() {
   const handleChangeAvatar = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Permissão necessária', 'Permita o acesso à galeria para trocar a foto.');
+      toast.error('Permita o acesso à galeria para trocar a foto.');
       return;
     }
 
@@ -282,8 +283,9 @@ function ProfessionalProfile() {
     try {
       // Por enquanto salvamos o URI no perfil (persistente no app e sincronizável via Supabase).
       await updateProfile({ avatarUrl: uri });
+      toast.success('Foto atualizada.');
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Não foi possível atualizar a foto.');
+      toast.error(e?.message || 'Não foi possível atualizar a foto.');
     }
   };
 

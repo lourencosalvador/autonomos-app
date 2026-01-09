@@ -12,6 +12,14 @@ function assertSupabaseConfigured() {
   }
 }
 
+async function ensureRoleNotNull(userId: string, currentRole: ProfileRole | null) {
+  if (currentRole) return currentRole;
+  // Regra: nunca perguntamos no login. Se não houver role, assumimos "client" por padrão.
+  const fallback: ProfileRole = 'client';
+  await supabase.from('profiles').upsert({ id: userId, role: fallback }, { onConflict: 'id' });
+  return fallback;
+}
+
 export type UserRole = 'client' | 'professional';
 
 export interface User {
@@ -37,7 +45,7 @@ interface AuthState {
   updateProfile: (data: { name?: string; phone?: string | null; avatarUrl?: string | null; workArea?: string | null; gender?: string | null; birthDate?: string | null; }) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (name: string, email: string, password: string, role: UserRole) => Promise<void>;
-  signInWithOAuth: (provider: 'google' | 'apple') => Promise<void>;
+  signInWithOAuth: (provider: 'google' | 'apple', opts?: { role?: UserRole }) => Promise<void>;
   setRole: (role: UserRole) => Promise<void>;
   signOut: () => Promise<void>;
   updateUser: (user: Partial<User>) => void;
@@ -56,13 +64,6 @@ export const useAuthStore = create<AuthState>()(
           set({ isLoading: false });
           return () => {};
         }
-        if (get().hasInitialized) {
-          // Já existe subscription ativa
-          const { data } = await supabase.auth.getSession();
-          if (!data.session?.user) set({ user: null, isAuthenticated: false, isLoading: false });
-          return () => {};
-        }
-
         set({ isLoading: true });
 
         const applySession = async (session: any) => {
@@ -120,7 +121,7 @@ export const useAuthStore = create<AuthState>()(
           }
 
           const safeProfile = profile;
-          const role = (safeProfile?.role as ProfileRole | null) || null;
+          const role = await ensureRoleNotNull(sbUser.id, ((safeProfile?.role as ProfileRole | null) || null));
 
           set({
             user: {
@@ -139,8 +140,15 @@ export const useAuthStore = create<AuthState>()(
           });
         };
 
+        // Mesmo que já exista subscription, ainda precisamos hidratar a sessão atual
+        // (ex: login chama init() novamente).
         const { data } = await supabase.auth.getSession();
         await applySession(data.session);
+
+        if (get().hasInitialized) {
+          // Já existe subscription ativa; não cria outra.
+          return () => {};
+        }
 
         const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
           await applySession(session);
@@ -161,11 +169,12 @@ export const useAuthStore = create<AuthState>()(
           .maybeSingle();
         if (error || !data) return;
         const p: any = data;
+        const ensuredRole = await ensureRoleNotNull(current.id, p.role ?? null);
         set({
           user: {
             ...current,
             name: p.name || current.name,
-            role: p.role ?? current.role,
+            role: ensuredRole ?? current.role,
             phone: p.phone ?? current.phone ?? null,
             avatar: p.avatar_url ?? current.avatar,
             workArea: p.work_area ?? current.workArea ?? null,
@@ -283,7 +292,7 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      signInWithOAuth: async (provider: 'google' | 'apple') => {
+      signInWithOAuth: async (provider: 'google' | 'apple', opts?: { role?: UserRole }) => {
         set({ isLoading: true });
         try {
           assertSupabaseConfigured();
@@ -292,7 +301,7 @@ export const useAuthStore = create<AuthState>()(
             isExpoGo
               ? { useProxy: true } // Expo Go: https://auth.expo.io/@user/slug
               : { scheme: 'autonomosapp', path: 'auth/callback' } // Dev-client / standalone
-          );
+          ).trim();
 
           const { data, error } = await supabase.auth.signInWithOAuth({
             provider,
@@ -317,7 +326,29 @@ export const useAuthStore = create<AuthState>()(
           const ex = await supabase.auth.exchangeCodeForSession(code);
           if (ex.error) throw ex.error;
 
-          await get().init();
+          // Se veio role (fluxo: Criar conta → Tipo de conta → Register → Google),
+          // persistimos no profile imediatamente.
+          const desiredRole = opts?.role;
+          const sbUser = ex.data?.session?.user;
+          if (desiredRole && sbUser?.id) {
+            const meta: any = sbUser.user_metadata || {};
+            const metaName = meta.full_name || meta.name || null;
+            const metaAvatar = meta.avatar_url || meta.picture || meta.avatar || null;
+            await supabase.from('profiles').upsert(
+              {
+                id: sbUser.id,
+                role: desiredRole,
+                name: metaName,
+                phone: null,
+                avatar_url: metaAvatar,
+              },
+              { onConflict: 'id' }
+            );
+          }
+
+          // Garante sincronização no app (mesmo que init já esteja ativo).
+          await get().refreshProfile();
+          set({ isLoading: false });
         } catch (error) {
           set({ isLoading: false });
           throw error;

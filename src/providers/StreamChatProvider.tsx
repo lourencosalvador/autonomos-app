@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
 import { StreamChat } from 'stream-chat';
 import { Chat, OverlayProvider } from 'stream-chat-expo';
 import { STREAM_CONFIG } from '../config/stream.config';
 import { useAuthStore } from '../stores/authStore';
 import { toStreamSafeUserId } from '../utils/stream';
+import { useStreamStore } from '../stores/streamStore';
 
 type Props = { children: React.ReactNode };
 
@@ -27,6 +27,8 @@ async function fetchStreamToken(payload: { userId: string; name: string; image?:
 export function StreamChatProvider({ children }: Props) {
   const { user, isAuthenticated } = useAuthStore();
   const apiKey = STREAM_CONFIG.apiKey;
+  const setStreamReady = useStreamStore((s) => s.setReady);
+  const setStreamError = useStreamStore((s) => s.setError);
 
   const client = useMemo(() => {
     if (!apiKey) return null;
@@ -46,6 +48,8 @@ export function StreamChatProvider({ children }: Props) {
       if (!isAuthenticated || !user) {
         setReady(false);
         setError(null);
+        setStreamReady(false);
+        setStreamError(null);
         try {
           await client.disconnectUser();
         } catch {}
@@ -55,10 +59,15 @@ export function StreamChatProvider({ children }: Props) {
       try {
         setReady(false);
         setError(null);
+        setStreamReady(false);
+        setStreamError(null);
 
         const streamUserId = toStreamSafeUserId(user.id || user.email);
         if (client.userID === streamUserId) {
-          if (!cancelled) setReady(true);
+          if (!cancelled) {
+            setReady(true);
+            setStreamReady(true);
+          }
           return;
         }
         if (isConnectingRef.current) return;
@@ -66,9 +75,11 @@ export function StreamChatProvider({ children }: Props) {
         try {
           await client.disconnectUser();
         } catch {}
-        const token =
-          (await fetchStreamToken({ userId: streamUserId, name: user.name, image: user.avatar })) ||
-          client.devToken(streamUserId);
+        const token = await fetchStreamToken({ userId: streamUserId, name: user.name, image: user.avatar });
+        if (!token) {
+          // Sem backend token: desliga o Stream e deixa o app seguir (Mensagens cai no modo legacy).
+          throw new Error('Token do chat indisponível');
+        }
 
         await client.connectUser(
           {
@@ -78,11 +89,20 @@ export function StreamChatProvider({ children }: Props) {
           },
           token
         );
-        if (!cancelled) setReady(true);
+        if (!cancelled) {
+          setReady(true);
+          setStreamReady(true);
+        }
       } catch (e) {
         if (!cancelled) {
           setReady(false);
-          setError('Falha ao conectar no chat. Verifique a internet e o API_URL.');
+          const msg =
+            e instanceof Error && e.message === 'Token do chat indisponível'
+              ? 'Chat temporariamente indisponível.'
+              : 'Falha ao conectar no chat.';
+          setError(msg);
+          setStreamReady(false);
+          setStreamError(msg);
         }
       } finally {
         isConnectingRef.current = false;
@@ -98,17 +118,8 @@ export function StreamChatProvider({ children }: Props) {
 
   if (!client) return <>{children}</>;
 
-  if (isAuthenticated && user && !ready) {
-    return (
-      <View className="flex-1 items-center justify-center bg-white">
-        <ActivityIndicator size="large" color="#00E7FF" />
-        <Text className="mt-3 text-[13px] font-bold text-gray-500">Conectando chat...</Text>
-        {error ? (
-          <Text className="mt-2 text-[12px] font-bold text-red-500">{error}</Text>
-        ) : null}
-      </View>
-    );
-  }
+  // Não bloqueia o app inteiro se o chat falhar; apenas não fornece contexto do Stream.
+  if (isAuthenticated && user && !ready) return <>{children}</>;
 
   return (
     <OverlayProvider>

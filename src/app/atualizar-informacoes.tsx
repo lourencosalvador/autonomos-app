@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { ChevronDown, User } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuthStore } from '../stores/authStore';
+import { toast } from '../lib/sonner';
+import { DatePickerModal } from '../components/DatePickerModal';
 
 export default function AtualizarInformacoesScreen() {
   const router = useRouter();
@@ -34,9 +35,13 @@ export default function AtualizarInformacoesScreen() {
     return birthDate.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric' });
   }, [birthDate]);
 
+  const birthIso = useMemo(() => {
+    return birthDate ? birthDate.toISOString().slice(0, 10) : null;
+  }, [birthDate]);
+
   const handleSave = async () => {
     if (!name.trim()) {
-      Alert.alert('Erro', 'Informe o seu nome.');
+      toast.error('Informe o seu nome.');
       return;
     }
     try {
@@ -46,10 +51,10 @@ export default function AtualizarInformacoesScreen() {
         gender: gender || null,
         birthDate: birthDateIso,
       });
-      Alert.alert('Sucesso', 'Informações atualizadas.');
+      toast.success('Informações atualizadas.');
       router.back();
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Não foi possível salvar.');
+      toast.error(e?.message || 'Não foi possível salvar.');
     }
   };
 
@@ -180,18 +185,16 @@ export default function AtualizarInformacoesScreen() {
         </Pressable>
       </Modal>
 
-      {dateOpen && (
-        <DateTimePicker
-          value={birthDate ?? new Date(2000, 0, 1)}
-          mode="date"
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          maximumDate={new Date()}
-          onChange={(_, date) => {
-            if (Platform.OS !== 'ios') setDateOpen(false);
-            if (date) setBirthDate(date);
-          }}
-        />
-      )}
+      <DatePickerModal
+        open={dateOpen}
+        title="Data de nascimento"
+        value={birthIso}
+        onClose={() => setDateOpen(false)}
+        onConfirm={(iso) => {
+          setBirthDate(new Date(iso));
+          setDateOpen(false);
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }

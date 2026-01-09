@@ -12,6 +12,7 @@ import { ChannelList, useChatContext } from 'stream-chat-expo';
 import { toStreamSafeChannelId, toStreamSafeUserId } from '../../utils/stream';
 import { MOCK_USERS } from '../../config/auth.config';
 import { EmptyState } from '../../components/EmptyState';
+import { useStreamStore } from '../../stores/streamStore';
 
 interface Message {
   id: string;
@@ -24,8 +25,9 @@ interface Message {
 export default function MessagesScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
+  const streamReady = useStreamStore((s) => s.ready);
 
-  if (STREAM_CONFIG.apiKey && user) {
+  if (STREAM_CONFIG.apiKey && user && streamReady) {
     return <StreamMessages />;
   }
 

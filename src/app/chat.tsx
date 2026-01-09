@@ -8,14 +8,35 @@ import { Channel, MessageInput, MessageList, useChatContext } from 'stream-chat-
 import { MOCK_USERS } from '../config/auth.config';
 import { useAuthStore } from '../stores/authStore';
 import { toStreamSafeChannelId, toStreamSafeUserId } from '../utils/stream';
+import { useStreamStore } from '../stores/streamStore';
 
 export default function ChatScreen() {
   const router = useRouter();
   const { cid } = useLocalSearchParams<{ cid?: string }>();
   const { user } = useAuthStore();
+  const streamReady = useStreamStore((s) => s.ready);
   const { client } = useChatContext();
 
   const [channel, setChannel] = useState<StreamChannelType | null>(null);
+
+  if (!streamReady) {
+    return (
+      <View className="flex-1 bg-white items-center justify-center px-6">
+        <StatusBar style="dark" />
+        <Text className="text-[18px] font-extrabold text-gray-900">Chat em manutenção</Text>
+        <Text className="mt-2 text-[13px] font-bold text-gray-400 text-center">
+          O chat está temporariamente indisponível.
+        </Text>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          activeOpacity={0.85}
+          className="mt-6 h-12 px-6 items-center justify-center rounded-full bg-brand-cyan"
+        >
+          <Text className="text-[14px] font-extrabold text-white">Voltar</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   const myId = useMemo(() => {
     if (!user) return null;

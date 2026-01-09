@@ -3,36 +3,50 @@ import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Smartphone } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Text, TouchableOpacity, View } from 'react-native';
-import PhoneInput from 'react-native-phone-number-input';
-import { Flag } from 'react-native-country-picker-modal';
+import { KeyboardAvoidingView, Platform, Text, TouchableOpacity, View } from 'react-native';
+import PhoneInput, { ICountry, isValidPhoneNumber } from 'react-native-international-phone-number';
 import { useAuthStore } from '../stores/authStore';
+import { toast } from '../lib/sonner';
 
 export default function AtualizarTelefoneScreen() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
   const updateProfile = useAuthStore((s) => s.updateProfile);
-  const [phone, setPhone] = useState('');
-  const [phoneFormatted, setPhoneFormatted] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState<ICountry | null>(null);
 
   useEffect(() => {
     if (!user?.phone) return;
-    setPhone(user.phone);
-    setPhoneFormatted(user.phone);
+    setPhoneNumber(user.phone);
   }, [user?.id]);
 
+  const buildE164 = (country: ICountry | null, phone: string) => {
+    const raw = (phone || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('+')) return raw;
+    if (!country) return raw;
+    const root = country.idd?.root || '+';
+    const suffix = country.idd?.suffixes?.[0] || '';
+    return `${root}${suffix}${raw}`.replace(/\s+/g, '');
+  };
+
   const handleSave = async () => {
-    if (!phoneFormatted && !phone) {
-      Alert.alert('Erro', 'Insira um número válido.');
+    if (!phoneNumber) {
+      toast.error('Insira um número válido.');
+      return;
+    }
+    if (selectedCountry && !isValidPhoneNumber(phoneNumber, selectedCountry)) {
+      toast.error('Número de telefone inválido.');
       return;
     }
     try {
-      await updateProfile({ phone: phoneFormatted || phone });
-      Alert.alert('Sucesso', 'Número atualizado.');
+      const e164 = buildE164(selectedCountry, phoneNumber);
+      await updateProfile({ phone: e164 || phoneNumber });
+      toast.success('Número atualizado.');
       router.back();
     } catch (e: any) {
-      Alert.alert('Erro', e?.message || 'Não foi possível salvar.');
+      toast.error(e?.message || 'Não foi possível salvar.');
     }
   };
 
@@ -69,41 +83,37 @@ export default function AtualizarTelefoneScreen() {
       <View className="px-6 pt-8">
         <View className="rounded-2xl bg-gray-100 px-4 py-2">
           <PhoneInput
-            defaultCode="AO"
-            layout="first"
-            value={phone}
-            onChangeText={setPhone}
-            onChangeFormattedText={setPhoneFormatted}
+            value={phoneNumber}
+            onChangePhoneNumber={setPhoneNumber}
+            selectedCountry={selectedCountry}
+            onChangeSelectedCountry={setSelectedCountry}
+            defaultCountry="AO"
+            language="por"
+            theme="light"
             placeholder="Inserir novo número"
-            countryPickerProps={{
-              withEmoji: false,
-              renderFlagButton: (props: any) => (
-                <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-                  <Flag countryCode={props.countryCode} withEmoji={false} />
-                </View>
-              ),
+            phoneInputPlaceholderTextColor="#9CA3AF"
+            phoneInputSelectionColor="#00E7FF"
+            disabled={isLoading}
+            modalType="bottomSheet"
+            phoneInputStyles={{
+              container: {
+                backgroundColor: 'transparent',
+                borderWidth: 0,
+                minHeight: 56,
+                alignItems: 'center',
+                justifyContent: 'flex-start',
+              },
+              flagContainer: {
+                backgroundColor: 'transparent',
+                paddingHorizontal: 10,
+                borderTopLeftRadius: 16,
+                borderBottomLeftRadius: 16,
+              },
+              caret: { color: '#9CA3AF', fontSize: 14 },
+              divider: { backgroundColor: '#E5E7EB', marginLeft: 10, marginRight: 10, height: '55%' },
+              callingCode: { color: '#111827', fontWeight: '800', fontSize: 14, minWidth: 54, textAlign: 'center' },
+              input: { color: '#111827', fontSize: 14, fontWeight: '700', paddingHorizontal: 12, paddingVertical: 0 },
             }}
-            containerStyle={{
-              width: '100%',
-              backgroundColor: 'transparent',
-              borderRadius: 16,
-              height: 56,
-            }}
-            textContainerStyle={{
-              backgroundColor: 'transparent',
-              borderRadius: 16,
-              paddingVertical: 0,
-              paddingHorizontal: 0,
-            }}
-            textInputStyle={{
-              color: '#000000',
-              fontSize: 14,
-              paddingVertical: 0,
-            }}
-            codeTextStyle={{ color: '#111827', fontSize: 14, fontWeight: '600' }}
-            flagButtonStyle={{ width: 56 }}
-            withDarkTheme={false}
-            withShadow={false}
           />
         </View>
 
@@ -116,9 +126,9 @@ export default function AtualizarTelefoneScreen() {
           <Text className="text-[14px] font-bold text-white">{isLoading ? 'Salvando...' : 'Salvar Novo Número'}</Text>
         </TouchableOpacity>
 
-        {phoneFormatted ? (
+        {phoneNumber ? (
           <Text className="mt-3 text-[12px] text-gray-400">
-            Formato internacional: {phoneFormatted}
+            Número: {phoneNumber}
           </Text>
         ) : null}
       </View>

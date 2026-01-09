@@ -5,11 +5,11 @@ import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { ActivityIndicator, Alert, Keyboard, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
-import PhoneInput from 'react-native-phone-number-input';
-import { Flag } from 'react-native-country-picker-modal';
+import PhoneInput, { ICountry } from 'react-native-international-phone-number';
 import { z } from 'zod';
 import { SuccessModal } from '../../components/SuccessModal';
 import { sendOTP } from '../../services/apiService';
+import { toast } from '../../lib/sonner';
 
 type VerificationMethod = 'email' | 'sms';
 
@@ -33,6 +33,8 @@ export default function ForgotPasswordScreen() {
   const [method, setMethod] = useState<VerificationMethod>('email');
   const [isLoading, setIsLoading] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [selectedCountry, setSelectedCountry] = useState<ICountry | null>(null);
+  const [phoneNumber, setPhoneNumber] = useState('');
 
   const { control, handleSubmit, formState: { errors }, trigger, setValue } = useForm<ForgotPasswordFormData>({
     resolver: zodResolver(forgotPasswordSchema),
@@ -57,14 +59,24 @@ export default function ForgotPasswordScreen() {
     setIsLoading(true);
     
     try {
-      const value = method === 'email' ? data.email : data.phone;
+      const buildE164 = (country: ICountry | null, phone: string) => {
+        const raw = (phone || '').trim();
+        if (!raw) return '';
+        if (raw.startsWith('+')) return raw;
+        if (!country) return raw;
+        const root = country.idd?.root || '+';
+        const suffix = country.idd?.suffixes?.[0] || '';
+        return `${root}${suffix}${raw}`.replace(/\s+/g, '');
+      };
+
+      const value = method === 'email' ? data.email : buildE164(selectedCountry, data.phone || phoneNumber);
       await sendOTP(method, value!);
       
       setIsLoading(false);
       setShowSuccess(true);
     } catch (error: any) {
       setIsLoading(false);
-      Alert.alert('Erro', error.message || 'Falha ao enviar código');
+      toast.error(error.message || 'Falha ao enviar código');
     }
   };
 
@@ -209,47 +221,40 @@ export default function ForgotPasswordScreen() {
                   }`}
                 >
                   <PhoneInput
-                    defaultCode="AO"
-                    layout="first"
-                    value={(value || '').replace(/^\+244/, '')}
-                    onChangeText={() => {}}
-                    onChangeFormattedText={(formatted) => onChange(formatted)}
+                    value={phoneNumber}
+                    onChangePhoneNumber={(v) => {
+                      setPhoneNumber(v);
+                      onChange(v);
+                    }}
+                    selectedCountry={selectedCountry}
+                    onChangeSelectedCountry={setSelectedCountry}
+                    defaultCountry="AO"
+                    language="por"
+                    theme="light"
                     placeholder="Inserir número"
-                    countryPickerProps={{
-                      withEmoji: false,
-                      renderFlagButton: (props: any) => (
-                        <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-                          <Flag countryCode={props.countryCode} withEmoji={false} />
-                        </View>
-                      ),
-                    }}
-                    containerStyle={{
-                      width: '100%',
-                      backgroundColor: 'transparent',
-                      borderRadius: 16,
-                      height: 56,
-                    }}
-                    textContainerStyle={{
-                      backgroundColor: 'transparent',
-                      borderRadius: 16,
-                      paddingVertical: 0,
-                      paddingHorizontal: 0,
-                    }}
-                    textInputStyle={{
-                      color: errors.phone ? '#7F1D1D' : '#000000',
-                      fontSize: 16,
-                      paddingVertical: 0,
-                    }}
-                    codeTextStyle={{
-                      color: errors.phone ? '#7F1D1D' : '#111827',
-                      fontSize: 16,
-                      fontWeight: '600',
-                    }}
-                    flagButtonStyle={{ width: 56 }}
-                    withShadow={false}
-                    withDarkTheme={false}
-                    disableArrowIcon={false}
+                    phoneInputPlaceholderTextColor={errors.phone ? '#7F1D1D' : '#9CA3AF'}
+                    phoneInputSelectionColor="#00E7FF"
                     disabled={isLoading}
+                    modalType="bottomSheet"
+                    phoneInputStyles={{
+                      container: {
+                        backgroundColor: 'transparent',
+                        borderWidth: 0,
+                        minHeight: 56,
+                        alignItems: 'center',
+                        justifyContent: 'flex-start',
+                      },
+                      flagContainer: {
+                        backgroundColor: 'transparent',
+                        paddingHorizontal: 10,
+                        borderTopLeftRadius: 16,
+                        borderBottomLeftRadius: 16,
+                      },
+                      caret: { color: '#9CA3AF', fontSize: 14 },
+                      divider: { backgroundColor: '#E5E7EB', marginLeft: 10, marginRight: 10, height: '55%' },
+                      callingCode: { color: errors.phone ? '#7F1D1D' : '#111827', fontWeight: '800', fontSize: 14, minWidth: 54, textAlign: 'center' },
+                      input: { color: errors.phone ? '#7F1D1D' : '#111827', fontSize: 14, fontWeight: '700', paddingHorizontal: 12, paddingVertical: 0 },
+                    }}
                   />
                 </View>
                 {errors.phone && (
