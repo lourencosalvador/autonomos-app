@@ -4,22 +4,23 @@ import { StatusBar } from 'expo-status-bar';
 import { Check, Loader2, X } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { getRandomPhotos } from '../../services/unsplashService';
-import { mockServices, ServiceRequest, ServiceStatus } from '../../types/services';
 import { useAuthStore } from '../../stores/authStore';
 import { useRequestsStore } from '../../stores/requestsStore';
 import { Swipeable } from 'react-native-gesture-handler';
 import { EmptyState } from '../../components/EmptyState';
+import { toast } from '../../lib/sonner';
 
 type FilterTab = 'services' | 'counterparty' | 'status';
+type ServiceStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed';
 
 export default function ServicesScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const isProfessional = user?.role === 'professional';
   const requests = useRequestsStore((s) => s.requests);
+  const fetchRequests = useRequestsStore((s) => s.fetchRequests);
   const deleteRequest = useRequestsStore((s) => s.deleteRequest);
-  const [services, setServices] = useState<ServiceRequest[]>([]);
+  const submitReview = useRequestsStore((s) => s.submitReview);
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterTab>('services');
@@ -27,12 +28,26 @@ export default function ServicesScreen() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
 
   useEffect(() => {
-    if (isProfessional) {
-      setLoading(false);
-      return;
+    let mounted = true;
+    async function run() {
+      if (!user?.id) {
+        if (mounted) setLoading(false);
+        return;
+      }
+      try {
+        if (mounted) setLoading(true);
+        await fetchRequests(user.id);
+      } catch {
+        // Se falhar, deixamos o estado persistido/local como fallback.
+      } finally {
+        if (mounted) setLoading(false);
+      }
     }
-    loadServices();
-  }, [isProfessional]);
+    run();
+    return () => {
+      mounted = false;
+    };
+  }, [fetchRequests, user?.id]);
 
   useEffect(() => {
     if (searchQuery === '') {
@@ -49,20 +64,6 @@ export default function ServicesScreen() {
 
     return () => clearTimeout(timeout);
   }, [searchQuery]);
-
-  const loadServices = async () => {
-    setLoading(true);
-    const photos = await getRandomPhotos(mockServices.length);
-    
-    const servicesWithPhotos = mockServices.map((service, index) => ({
-      ...service,
-      id: `service-${index}`,
-      providerAvatar: photos[index]?.url || 'https://via.placeholder.com/150',
-    }));
-    
-    setServices(servicesWithPhotos);
-    setLoading(false);
-  };
 
   const getStatusConfig = (status: ServiceStatus) => {
     switch (status) {
@@ -90,37 +91,66 @@ export default function ServicesScreen() {
           text: 'Rejeitado',
           textColor: 'text-gray-400',
         };
+      case 'cancelled':
+        return {
+          bgColor: 'bg-gray-100',
+          borderColor: 'border-gray-200',
+          icon: <X size={18} color="#9CA3AF" strokeWidth={3} />,
+          text: 'Cancelado',
+          textColor: 'text-gray-500',
+        };
+      case 'completed':
+        return {
+          bgColor: 'bg-emerald-50/60',
+          borderColor: 'border-emerald-100/40',
+          icon: <Check size={18} color="#10B981" strokeWidth={3} />,
+          text: 'Concluído',
+          textColor: 'text-gray-400',
+        };
     }
   };
 
-  const filteredClientServices = useMemo(() => {
-    return services.filter((service) => {
-      if (!debouncedQuery) return true;
-      const query = debouncedQuery.toLowerCase();
-      return (
-        service.serviceName.toLowerCase().includes(query) ||
-        service.providerName.toLowerCase().includes(query) ||
-        service.providerRole.toLowerCase().includes(query)
-      );
-    });
-  }, [debouncedQuery, services]);
+  const clientRequests = useMemo(() => {
+    if (!user) return [];
+    // Concluídos não aparecem na lista principal (ficam na carteira/histórico)
+    return requests.filter((r) => r.clientId === user.id && r.status !== 'cancelled' && r.status !== 'completed');
+  }, [requests, user]);
 
   const providerRequests = useMemo(() => {
     if (!isProfessional || !user) return [];
-    return requests.filter((r) => r.providerId === user.id);
+    return requests.filter((r) => r.providerId === user.id && r.status !== 'cancelled' && r.status !== 'completed');
   }, [isProfessional, requests, user]);
 
-  const filteredProviderRequests = useMemo(() => {
+  const filteredRequests = useMemo(() => {
+    const base = isProfessional ? providerRequests : clientRequests;
     const q = debouncedQuery.trim().toLowerCase();
-    return providerRequests.filter((r) => {
+    const filtered = base.filter((r) => {
       if (!q) return true;
-      return r.serviceName.toLowerCase().includes(q) || r.clientName.toLowerCase().includes(q);
+      const counterparty = isProfessional ? r.clientName : r.providerName;
+      return r.serviceName.toLowerCase().includes(q) || counterparty.toLowerCase().includes(q);
     });
-  }, [debouncedQuery, providerRequests]);
+
+    // Ordenação simples por filtro ativo
+    const statusOrder: Record<string, number> = { pending: 0, accepted: 1, rejected: 2 };
+    return [...filtered].sort((a, b) => {
+      if (activeFilter === 'services') return a.serviceName.localeCompare(b.serviceName);
+      if (activeFilter === 'counterparty') {
+        const aName = (isProfessional ? a.clientName : a.providerName) || '';
+        const bName = (isProfessional ? b.clientName : b.providerName) || '';
+        return aName.localeCompare(bName);
+      }
+      if (activeFilter === 'status') {
+        return (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
+      }
+      return 0;
+    });
+  }, [activeFilter, clientRequests, debouncedQuery, isProfessional, providerRequests]);
 
   const statusFromRequest = (s: any): ServiceStatus => {
     if (s === 'accepted') return 'accepted';
     if (s === 'rejected') return 'rejected';
+    if (s === 'cancelled') return 'cancelled';
+    if (s === 'completed') return 'completed';
     return 'pending';
   };
 
@@ -144,7 +174,7 @@ export default function ServicesScreen() {
     );
   }
 
-  const listData: any[] = isProfessional ? (filteredProviderRequests as any) : (filteredClientServices as any);
+  const listData: any[] = filteredRequests as any;
 
   return (
     <View className="flex-1 bg-white pt-3">
@@ -161,7 +191,7 @@ export default function ServicesScreen() {
           </TouchableOpacity>
 
           <Text className="flex-1 ml-2 text-[22.5px] font-bold text-gray-900">
-            Serviços Solicitados
+            {isProfessional ? 'Pedidos Recebidos' : 'Meus Pedidos'}
           </Text>
 
           <TouchableOpacity
@@ -238,7 +268,7 @@ export default function ServicesScreen() {
               ? `Nenhum resultado para "${debouncedQuery}".`
               : isProfessional
                 ? 'Você ainda não recebeu pedidos.'
-                : 'Você ainda não solicitou serviços.'
+                : 'Você ainda não fez nenhum pedido.'
           }
           actionLabel={debouncedQuery ? 'Limpar pesquisa' : undefined}
           onAction={debouncedQuery ? () => setSearchQuery('') : undefined}
@@ -250,8 +280,8 @@ export default function ServicesScreen() {
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 20 }}
           ItemSeparatorComponent={() => <View className="h-3" />}
           renderItem={({ item, index }: any) => {
-          const isReq = isProfessional;
-          const statusConfig = getStatusConfig(isReq ? statusFromRequest(item.status) : item.status);
+          const isReq = true;
+          const statusConfig = getStatusConfig(statusFromRequest(item.status));
           
           const Card = (
             <TouchableOpacity
@@ -270,17 +300,21 @@ export default function ServicesScreen() {
 
                 <View className="flex-row items-center gap-3 flex-1">
                   <Image
-                    source={{ uri: isReq ? avatarFromIndex(index) : item.providerAvatar }}
+                    source={{
+                      uri:
+                        (isProfessional ? item.clientAvatarUrl : item.providerAvatarUrl) ||
+                        avatarFromIndex(index),
+                    }}
                     className="h-12 w-12 rounded-full"
                     resizeMode="cover"
                   />
                   
                   <View className="flex-1">
                     <Text className="text-[13px] font-bold text-gray-900" numberOfLines={1} ellipsizeMode="tail">
-                      {isReq ? item.clientName : item.providerName}
+                      {isProfessional ? item.clientName : item.providerName}
                     </Text>
                     <Text className="mt-0.5 text-[13px] text-gray-500" numberOfLines={1} ellipsizeMode="tail">
-                      {isReq ? 'Cliente' : item.providerRole}
+                      {isProfessional ? 'Cliente' : 'Prestador'}
                     </Text>
                   </View>
                 </View>
@@ -295,9 +329,7 @@ export default function ServicesScreen() {
             </TouchableOpacity>
           );
 
-          if (!isReq) return Card;
-
-          return (
+          return isProfessional ? (
             <Swipeable
               overshootLeft={false}
               overshootRight={false}
@@ -319,6 +351,8 @@ export default function ServicesScreen() {
             >
               {Card}
             </Swipeable>
+          ) : (
+            Card
           );
         }}
       />

@@ -13,6 +13,8 @@ import { toStreamSafeChannelId, toStreamSafeUserId } from '../../utils/stream';
 import { MOCK_USERS } from '../../config/auth.config';
 import { EmptyState } from '../../components/EmptyState';
 import { useStreamStore } from '../../stores/streamStore';
+import { ChannelPreviewMessenger } from 'stream-chat-expo';
+import { toast } from '../../lib/sonner';
 
 interface Message {
   id: string;
@@ -26,12 +28,112 @@ export default function MessagesScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const streamReady = useStreamStore((s) => s.ready);
+  const streamError = useStreamStore((s) => s.error);
+  const retryStream = useStreamStore((s) => s.retry);
+
+  // Se não houver API key do Stream, não mostramos mocks (chat fica em manutenção).
+  if (!STREAM_CONFIG.apiKey) {
+    return (
+      <View className="flex-1 bg-white">
+        <StatusBar style="dark" />
+
+        <View className="px-6 pt-16 pb-5">
+          <View className="flex-row items-center justify-between">
+            <TouchableOpacity
+              onPress={() => router.back()}
+              className="h-10 w-10 items-center justify-center"
+              activeOpacity={0.7}
+            >
+              <Ionicons name="arrow-back" size={24} color="#1F2937" />
+            </TouchableOpacity>
+
+            <Text className="flex-1 text-center text-[22.5px] font-bold text-gray-900">
+              Mensagens
+            </Text>
+
+            <TouchableOpacity
+              onPress={() => router.push('/notificacoes')}
+              activeOpacity={0.7}
+              className="relative h-10 w-10 items-center justify-center"
+            >
+              <Ionicons name="notifications-outline" size={26} color="#1F2937" />
+              <View className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-brand-cyan" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <EmptyState
+          icon="chatbubble-ellipses-outline"
+          title="Chat em manutenção"
+          description="O chat ainda não está configurado neste ambiente."
+        />
+      </View>
+    );
+  }
+
+  // Se o Stream está configurado mas falhou a conexão/token, não mostramos mocks.
+  if (STREAM_CONFIG.apiKey && user && streamError) {
+    return (
+      <View className="flex-1 bg-white">
+        <StatusBar style="dark" />
+
+        <View className="px-6 pt-16 pb-5">
+          <View className="flex-row items-center justify-between">
+            <TouchableOpacity
+              onPress={() => router.back()}
+              className="h-10 w-10 items-center justify-center"
+              activeOpacity={0.7}
+            >
+              <Ionicons name="arrow-back" size={24} color="#1F2937" />
+            </TouchableOpacity>
+
+            <Text className="flex-1 text-center text-[22.5px] font-bold text-gray-900">
+              Mensagens
+            </Text>
+
+            <TouchableOpacity
+              onPress={() => router.push('/notificacoes')}
+              activeOpacity={0.7}
+              className="relative h-10 w-10 items-center justify-center"
+            >
+              <Ionicons name="notifications-outline" size={26} color="#1F2937" />
+              <View className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-brand-cyan" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <EmptyState
+          icon="cloud-offline-outline"
+          title="Chat indisponível"
+          description={streamError || 'Não foi possível conectar ao servidor agora.'}
+          actionLabel="Tentar novamente"
+          onAction={() => retryStream()}
+        />
+      </View>
+    );
+  }
 
   if (STREAM_CONFIG.apiKey && user && streamReady) {
     return <StreamMessages />;
   }
 
-  return <LegacyMessages />;
+  // Stream configurado, mas ainda conectando (ou ainda sem sessão/token). Não mostramos mocks.
+  return (
+    <View className="flex-1 bg-white">
+      <StatusBar style="dark" />
+      <View className="flex-1 items-center justify-center px-6">
+        <ActivityIndicator size="large" color="#00E7FF" />
+        <Text className="mt-3 text-[13px] font-bold text-gray-500">Conectando no chat...</Text>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => retryStream()}
+          className="mt-6 h-11 px-6 items-center justify-center rounded-full bg-brand-cyan"
+        >
+          <Text className="text-[13px] font-extrabold text-white">Tentar novamente</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
 }
 
 function StreamMessages() {
@@ -90,6 +192,35 @@ function StreamMessages() {
             pathname: '/chat',
             params: { cid: channel.cid },
           });
+        }}
+        Preview={(previewProps: any) => {
+          const channel = previewProps?.channel;
+          return (
+            <Swipeable
+              overshootLeft={false}
+              overshootRight={false}
+              renderRightActions={() => (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={async () => {
+                    try {
+                      // "Apagar" = ocultar conversa apenas para o utilizador atual
+                      await channel?.hide?.();
+                      toast.success('Conversa removida.');
+                    } catch (e: any) {
+                      toast.error(e?.message || 'Não foi possível remover a conversa.');
+                    }
+                  }}
+                  className="w-24 items-center justify-center bg-red-500"
+                >
+                  <Ionicons name="trash-outline" size={22} color="white" />
+                  <Text className="mt-1 text-[11px] font-bold text-white">Apagar</Text>
+                </TouchableOpacity>
+              )}
+            >
+              <ChannelPreviewMessenger {...previewProps} />
+            </Swipeable>
+          );
         }}
         // A UI do Stream já inclui presença, typing, etc.
         // Aqui mantemos o layout do header do app e deixamos a lista pronta do Stream.

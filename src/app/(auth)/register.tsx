@@ -50,8 +50,13 @@ export default function RegisterScreen() {
   const handleGoogle = async () => {
     const id = toast.loading('Conectando com Google...');
     try {
+      if (role === 'professional' && !workArea) {
+        toast.dismiss(id);
+        toast.error('Selecione a Área de Trabalho.');
+        return;
+      }
       // Fluxo de cadastro com Google: já salva o tipo de conta escolhido (role) no profile.
-      await signInWithOAuth('google', { role });
+      await signInWithOAuth('google', { role, workArea: workArea || null });
       toast.dismiss(id);
       toast.success('Conta criada com Google.');
     } catch (e: any) {
@@ -74,13 +79,25 @@ export default function RegisterScreen() {
       toast.error('Preencha os campos obrigatórios.');
       return;
     }
+    if (role === 'professional' && !workArea) {
+      toast.error('Selecione a Área de Trabalho.');
+      return;
+    }
     if (phoneNumber && selectedCountry && !isValidPhoneNumber(phoneNumber, selectedCountry)) {
       toast.error('Número de telefone inválido.');
       return;
     }
     const id = toast.loading('Criando conta...');
     try {
-      await signUp(name, email, password, role);
+      const raw = String(phoneNumber || '').replace(/\D/g, '');
+      const dial = selectedCountry?.callingCode ? String(selectedCountry.callingCode).replace(/\D/g, '') : '';
+      const e164 = raw ? `+${dial}${raw}` : null;
+      await signUp(name, email, password, role, {
+        phone: e164,
+        workArea: workArea || null,
+        gender: gender || null,
+        birthDate: birthIso,
+      });
       // Se não foi autenticado automaticamente, manda para login (sem falar de confirmação por email).
       const authed = useAuthStore.getState().isAuthenticated;
       if (!authed) {
@@ -211,16 +228,18 @@ export default function RegisterScreen() {
               />
             </View>
 
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => setWorkOpen(true)}
-              className="flex-row items-center justify-between rounded-2xl bg-gray-100 px-5 py-4"
-            >
-              <Text className="text-[14px]" style={{ color: workArea ? '#000000' : '#9CA3AF' }}>
-                {workArea || 'Área de Trabalho'}
-              </Text>
-              <ChevronDown size={18} color="#9CA3AF" />
-            </TouchableOpacity>
+            {role === 'professional' ? (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => setWorkOpen(true)}
+                className="flex-row items-center justify-between rounded-2xl bg-gray-100 px-5 py-4"
+              >
+                <Text className="text-[14px]" style={{ color: workArea ? '#000000' : '#9CA3AF' }}>
+                  {workArea || 'Área de Trabalho'}
+                </Text>
+                <ChevronDown size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+            ) : null}
 
             <View className={fieldClass}>
               <TextInput

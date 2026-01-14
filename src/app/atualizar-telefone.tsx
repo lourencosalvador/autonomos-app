@@ -7,6 +7,7 @@ import { KeyboardAvoidingView, Platform, Text, TouchableOpacity, View } from 're
 import PhoneInput, { ICountry, isValidPhoneNumber } from 'react-native-international-phone-number';
 import { useAuthStore } from '../stores/authStore';
 import { toast } from '../lib/sonner';
+import { DismissKeyboardView } from '../components/DismissKeyboardView';
 
 export default function AtualizarTelefoneScreen() {
   const router = useRouter();
@@ -51,11 +52,12 @@ export default function AtualizarTelefoneScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      className="flex-1 bg-white"
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
-    >
+    <DismissKeyboardView>
+      <KeyboardAvoidingView
+        className="flex-1 bg-white"
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+      >
       <StatusBar style="dark" />
 
       <View className="px-6 pt-16">
@@ -132,7 +134,8 @@ export default function AtualizarTelefoneScreen() {
           </Text>
         ) : null}
       </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </DismissKeyboardView>
   );
 }
 

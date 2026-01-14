@@ -14,6 +14,7 @@ import UnionArt from '../../../assets/images/Union.svg';
 import { EmptyState } from '../../components/EmptyState';
 import { categories } from '../../data/categories';
 import { services } from '../../data/services';
+import { isSupabaseConfigured, supabase } from '../../lib/supabase';
 import { getRandomPhotos } from '../../services/unsplashService';
 import { useAuthStore } from '../../stores/authStore';
 import { useRequestsStore } from '../../stores/requestsStore';
@@ -150,6 +151,10 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
   const deleteRequest = useRequestsStore((s) => s.deleteRequest);
   const [loading, setLoading] = useState(true);
   const [avatars, setAvatars] = useState<{ a: string; b: string; c: string } | null>(null);
+  const [latestReview, setLatestReview] = useState<null | { clientName: string; serviceName: string; comment: string | null; rating: number; clientAvatarUrl: string | null }>(null);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [walletCurrency, setWalletCurrency] = useState('USD');
 
   useEffect(() => {
     load();
@@ -166,16 +171,113 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
     setLoading(false);
   };
 
-  const rating = useMemo(() => [1, 1, 1, 0, 0], []);
+  useEffect(() => {
+    let mounted = true;
+    async function run() {
+      setReviewsLoading(true);
+      try {
+        if (!user?.id || !isSupabaseConfigured) {
+          if (mounted) setLatestReview(null);
+          return;
+        }
+        const { data, error } = await supabase
+          .from('reviews')
+          .select('rating, comment, client_avatar_url, request:requests(service_name, client_name)')
+          .eq('provider_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        const req: any = (data as any)?.request || {};
+        const ratingNum = Number((data as any)?.rating || 0);
+        if (mounted) {
+          setLatestReview(
+            data
+              ? {
+                  clientName: String(req.client_name || 'Cliente'),
+                  serviceName: String(req.service_name || 'Serviço'),
+                  comment: (data as any)?.comment ? String((data as any).comment) : null,
+                  rating: Number.isFinite(ratingNum) ? Math.max(1, Math.min(5, ratingNum)) : 0,
+                  clientAvatarUrl: (data as any)?.client_avatar_url ? String((data as any).client_avatar_url) : null,
+                }
+              : null
+          );
+        }
+      } catch {
+        if (mounted) setLatestReview(null);
+      } finally {
+        if (mounted) setReviewsLoading(false);
+      }
+    }
+    run();
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function run() {
+      try {
+        if (!user?.id || !isSupabaseConfigured) return;
+        // 1) Tenta pela tabela payments (carteira real)
+        const { data: pays, error } = await supabase
+          .from('payments')
+          .select('amount,currency,status')
+          .eq('provider_id', user.id)
+          .eq('status', 'succeeded');
+        if (!error && pays && Array.isArray(pays) && pays.length) {
+          const sum = pays.reduce((acc: number, p: any) => acc + Number(p.amount || 0), 0);
+          if (mounted) {
+            setWalletBalance(sum);
+            setWalletCurrency(String((pays[0] as any)?.currency || 'USD').toUpperCase());
+          }
+          return;
+        }
+
+        // 2) Fallback: usa requests.payment_status
+        const { data: reqs } = await supabase
+          .from('requests')
+          .select('price_amount,currency,payment_status')
+          .eq('provider_id', user.id)
+          .eq('payment_status', 'succeeded');
+        const sum = (reqs || []).reduce((acc: number, r: any) => acc + Number(r.price_amount || 0), 0);
+        if (mounted) {
+          setWalletBalance(sum);
+          setWalletCurrency(String((reqs?.[0] as any)?.currency || 'USD').toUpperCase());
+        }
+      } catch {
+        // silêncio
+      }
+    }
+    run();
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id]);
+
+  const walletLabel = useMemo(() => {
+    return `${walletCurrency} ${(walletBalance / 100).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, [walletBalance, walletCurrency]);
+
+  const ratingStars = useMemo(() => {
+    const n = latestReview?.rating || 0;
+    return [1, 2, 3, 4, 5].map((i) => (i <= n ? 1 : 0));
+  }, [latestReview?.rating]);
   const providerRequests = useMemo(() => {
     if (!user) return [];
-    return requests.filter((r) => r.providerId === user.id).slice(0, 3);
+    // Concluídos saem da lista de "Pedidos Recentes" (ficam no histórico/carteira)
+    return requests
+      .filter((r) => r.providerId === user.id && r.status !== 'cancelled' && r.status !== 'completed')
+      .slice(0, 3);
   }, [requests, user]);
   const statusLabel = useMemo(
     () => ({
       pending: 'Pendente',
       accepted: 'Aceite',
       rejected: 'Rejeitado',
+      cancelled: 'Cancelado',
+      completed: 'Concluído',
     }),
     []
   );
@@ -219,7 +321,7 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
                     <Text className="text-white/90 text-[13px] font-bold">Saldo Total</Text>
                     <MaterialCommunityIcons name="bank" size={16} color="rgba(255,255,255,0.9)" />
                   </View>
-                  <Text className="mt-6 text-white text-[26px] font-extrabold">AO 50.000.00kz</Text>
+                  <Text className="mt-6 text-white text-[26px] font-extrabold">{walletLabel}</Text>
                   <Text className="mt-2 text-white/80 text-[12px] tracking-widest">**** **** **** 6589</Text>
                 </View>
 
@@ -236,6 +338,10 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
                 <TouchableOpacity
                   activeOpacity={0.85}
                   className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2"
+                  onPress={(e) => {
+                    (e as any)?.stopPropagation?.();
+                    router.push('/carteira');
+                  }}
                 >
                   <Text className="text-white text-[12px] font-bold mr-2">Levantar</Text>
                   <Ionicons name="wallet-outline" size={16} color="white" />
@@ -244,6 +350,10 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
                 <TouchableOpacity
                   activeOpacity={0.85}
                   className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2"
+                  onPress={(e) => {
+                    (e as any)?.stopPropagation?.();
+                    router.push('/historico-servicos');
+                  }}
                 >
                   <Text className="text-white text-[12px] font-bold mr-2">Histórico</Text>
                   <Ionicons name="time-outline" size={16} color="white" />
@@ -272,7 +382,11 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
                 </Text>
               </View>
 
-              <TouchableOpacity activeOpacity={0.8} className="flex-row items-center gap-2">
+              <TouchableOpacity
+                activeOpacity={0.8}
+                className="flex-row items-center gap-2"
+                onPress={() => router.push({ pathname: '/profile', params: { tab: 'reviews' } })}
+              >
                 <Text className="text-[13px] font-bold text-gray-900">Ver tudo</Text>
                 <View className="h-9 w-9 items-center justify-center rounded-full bg-white">
                   <Ionicons name="arrow-forward" size={18} color="#00E7FF" />
@@ -280,29 +394,47 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
               </TouchableOpacity>
             </View>
 
-            <View className="mt-4 flex-row items-center">
-              <Image
-                source={{ uri: avatars?.a || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=120' }}
-                className="h-11 w-11 rounded-full"
-                resizeMode="cover"
+            {reviewsLoading ? (
+              <View className="py-8 items-center justify-center">
+                <Text className="text-gray-500 font-bold">Carregando...</Text>
+              </View>
+            ) : latestReview ? (
+              <View className="mt-4 flex-row items-center">
+                <Image
+                  source={{
+                    uri:
+                      latestReview.clientAvatarUrl ||
+                      avatars?.a ||
+                      'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=120',
+                  }}
+                  className="h-11 w-11 rounded-full"
+                  resizeMode="cover"
+                />
+                <View className="ml-3 flex-1">
+                  <Text className="text-[14px] font-bold text-gray-900">{latestReview.clientName}</Text>
+                  <Text className="mt-1 text-[10px] text-gray-500" numberOfLines={1}>
+                    {latestReview.comment ? latestReview.comment : `Serviço: ${latestReview.serviceName}`}
+                  </Text>
+                </View>
+                <View className="flex-row items-center gap-1">
+                  {ratingStars.map((v, idx) => (
+                    <Ionicons
+                      key={idx}
+                      name={v ? 'star' : 'star-outline'}
+                      size={18}
+                      color={v ? '#FBBF24' : '#D1D5DB'}
+                    />
+                  ))}
+                </View>
+              </View>
+            ) : (
+              <EmptyState
+                size="sm"
+                icon="star-outline"
+                title="Ainda não tem uma avaliação"
+                description="Quando os clientes avaliarem seus serviços, a última aparece aqui."
               />
-              <View className="ml-3 flex-1">
-                <Text className="text-[14px] font-bold text-gray-900">Ana Clara André</Text>
-                <Text className="mt-1 text-[10px] text-gray-500" numberOfLines={1}>
-                  Figma ipsum component variant main layer. Scrolling pencil library draft align...
-                </Text>
-              </View>
-              <View className="flex-row items-center gap-1">
-                {rating.map((v, idx) => (
-                  <Ionicons
-                    key={idx}
-                    name={v ? 'star' : 'star-outline'}
-                    size={18}
-                    color={v ? '#FBBF24' : '#D1D5DB'}
-                  />
-                ))}
-              </View>
-            </View>
+            )}
           </View>
 
           <View className="mt-7 flex-row items-center justify-between">
@@ -340,7 +472,7 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
                         )}
                       >
                         <RecentRow
-                          avatar={idx === 0 ? avatars?.a : idx === 1 ? avatars?.b : avatars?.c}
+                          avatar={r.clientAvatarUrl || (idx === 0 ? avatars?.a : idx === 1 ? avatars?.b : avatars?.c)}
                           name={r.clientName}
                           subtitle={`${r.serviceName} • ${statusLabel[(((r as any).status || 'pending') as keyof typeof statusLabel)]}`}
                           onPress={() =>

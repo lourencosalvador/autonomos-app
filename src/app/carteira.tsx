@@ -2,10 +2,15 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import * as WebBrowser from 'expo-web-browser';
+import { useEffect, useMemo, useState } from 'react';
 import { FlatList, Image, Text, TouchableOpacity, View } from 'react-native';
 import UnionArt from '../../assets/images/Union.svg';
 import { EmptyState } from '../components/EmptyState';
+import { useAuthStore } from '../stores/authStore';
+import { isSupabaseConfigured, supabase, type PaymentRow } from '../lib/supabase';
+import { createStripeConnectOnboarding } from '../services/apiService';
+import { toast } from '../lib/sonner';
 
 type MovementType = 'payment' | 'withdrawal';
 type Filter = 'all' | MovementType;
@@ -17,7 +22,7 @@ type Movement = {
   date: string;
   amount: number;
   type: MovementType;
-  avatar: any;
+  avatar?: any;
 };
 
 const ProfileImage = require('../../assets/images/Profile.jpg');
@@ -26,7 +31,7 @@ function formatKz(amount: number) {
   const sign = amount >= 0 ? '+' : '-';
   const abs = Math.abs(amount);
   const formatted = abs.toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `${sign}AO ${formatted}kz`;
+  return `${sign}${formatted}`;
 }
 
 function maskIban(iban: string) {
@@ -39,57 +44,157 @@ function maskIban(iban: string) {
 
 export default function CarteiraScreen() {
   const router = useRouter();
+  const user = useAuthStore((s) => s.user);
   const [showIban, setShowIban] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [paymentsTableMissing, setPaymentsTableMissing] = useState(false);
+  const [fallbackMovements, setFallbackMovements] = useState<Movement[]>([]);
 
   const iban = 'AO06 0040 0000 1234 5678 9012 3';
 
-  const movements = useMemo<Movement[]>(
-    () => [
-      {
-        id: 'm1',
-        name: 'Ana Carina',
-        subtitle: 'Pagamento Recebido',
-        date: '10/02/2025 | 12:30:25',
-        amount: 30000,
-        type: 'payment',
-        avatar: { uri: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200' },
-      },
-      {
-        id: 'm2',
-        name: 'Carla Silva Santos',
-        subtitle: 'Pagamento Recebido',
-        date: '05/05/2025 | 12:30:25',
-        amount: 30000,
-        type: 'payment',
-        avatar: { uri: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200' },
-      },
-      {
-        id: 'm3',
-        name: 'Eu',
-        subtitle: 'Levantamento',
-        date: '05/05/2025 | 12:30:25',
-        amount: -80250,
-        type: 'withdrawal',
-        avatar: ProfileImage,
-      },
-      {
-        id: 'm4',
-        name: 'Carla Silva Santos',
-        subtitle: 'Pagamento Recebido',
-        date: '05/05/2025 | 12:30:25',
-        amount: 30000,
-        type: 'payment',
-        avatar: { uri: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=200' },
-      },
-    ],
-    []
-  );
+  const movements = useMemo<Movement[]>(() => {
+    const mapped = (payments || [])
+      .filter((p) => p.status === 'succeeded')
+      .map((p) => {
+        const date = new Date(p.paid_at || p.created_at);
+        const dateStr = date.toLocaleString('pt-PT');
+        return {
+          id: p.id,
+          name: 'Pagamento',
+          subtitle: 'Pagamento Recebido',
+          date: dateStr,
+          amount: p.amount,
+          type: 'payment' as const,
+        };
+      });
+    return mapped.length ? mapped : fallbackMovements;
+  }, [fallbackMovements, payments]);
+
+  const balance = useMemo(() => {
+    return movements.reduce((sum, m) => sum + m.amount, 0);
+  }, [movements]);
+
+  const currency = useMemo(() => {
+    const c = payments?.find((p) => p.currency)?.currency || 'USD';
+    return c.toUpperCase();
+  }, [payments]);
+
+  const loadPayments = async () => {
+    if (!user) return;
+    if (!isSupabaseConfigured) return;
+    if (user.role !== 'professional') return;
+    try {
+      setLoading(true);
+      setPaymentsTableMissing(false);
+      setFallbackMovements([]);
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('provider_id', user.id)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setPayments(((data || []) as any) as PaymentRow[]);
+
+      // Fallback: se não houver pagamentos ainda, tenta derivar do requests.payment_status (serve para debug)
+      if (!data || (Array.isArray(data) && data.length === 0)) {
+        const { data: reqs, error: reqErr } = await supabase
+          .from('requests')
+          .select('id, client_name, price_amount, currency, paid_at, payment_status, created_at')
+          .eq('provider_id', user.id)
+          .eq('payment_status', 'succeeded')
+          .order('paid_at', { ascending: false });
+        if (!reqErr && reqs && Array.isArray(reqs)) {
+          const mapped: Movement[] = reqs.map((r: any) => {
+            const date = new Date(r.paid_at || r.created_at);
+            return {
+              id: String(r.id),
+              name: String(r.client_name || 'Cliente'),
+              subtitle: 'Pagamento Recebido',
+              date: date.toLocaleString('pt-PT'),
+              amount: Number(r.price_amount || 0),
+              type: 'payment',
+              avatar: ProfileImage,
+            };
+          });
+          setFallbackMovements(mapped);
+        }
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || '');
+      if (msg.includes("Could not find the table 'public.payments'")) {
+        setPaymentsTableMissing(true);
+        // Evita spam de toast em cada refresh
+        toast.error('Falta criar a tabela payments no Supabase (veja o SQL no SUPABASE_SETUP.md).');
+        // Mesmo sem a tabela payments, tentamos mostrar algo via requests.payment_status
+        try {
+          const { data: reqs, error: reqErr } = await supabase
+            .from('requests')
+            .select('id, client_name, price_amount, currency, paid_at, payment_status, created_at')
+            .eq('provider_id', user.id)
+            .eq('payment_status', 'succeeded')
+            .order('paid_at', { ascending: false });
+          if (!reqErr && reqs && Array.isArray(reqs)) {
+            const mapped: Movement[] = reqs.map((r: any) => {
+              const date = new Date(r.paid_at || r.created_at);
+              return {
+                id: String(r.id),
+                name: String(r.client_name || 'Cliente'),
+                subtitle: 'Pagamento Recebido',
+                date: date.toLocaleString('pt-PT'),
+                amount: Number(r.price_amount || 0),
+                type: 'payment',
+                avatar: ProfileImage,
+              };
+            });
+            setFallbackMovements(mapped);
+          }
+        } catch {}
+        return;
+      }
+      toast.error(msg || 'Não foi possível carregar a carteira.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPayments();
+  }, [user?.id]);
 
   const filtered = useMemo(() => {
     if (filter === 'all') return movements;
     return movements.filter((m) => m.type === filter);
   }, [filter, movements]);
+
+  const handleOnboardStripe = async () => {
+    if (!user) return;
+    try {
+      toast.loading('Abrindo ativação de recebimentos...');
+      const returnUrl = 'https://example.com/stripe/return';
+      const resp = await createStripeConnectOnboarding({ providerId: user.id, returnUrl });
+      await WebBrowser.openBrowserAsync(resp.url);
+      toast.success('Finalize no Stripe e volte para o app.');
+    } catch (e: any) {
+      toast.error(e?.message || 'Não foi possível abrir a ativação.');
+    }
+  };
+
+  if (!user || user.role !== 'professional') {
+    return (
+      <View className="flex-1 bg-white items-center justify-center px-6">
+        <StatusBar style="dark" />
+        <EmptyState
+          icon="wallet-outline"
+          title="Carteira disponível para prestadores"
+          description="Entre como prestador para ver seus recebimentos e histórico."
+          actionLabel="Voltar"
+          onAction={() => router.back()}
+        />
+      </View>
+    );
+  }
 
   return (
     <View className="flex-1 bg-white">
@@ -119,7 +224,9 @@ export default function CarteiraScreen() {
                   <Text className="text-white/90 text-[13px] font-bold">Saldo Total</Text>
                   <MaterialCommunityIcons name="bank" size={16} color="rgba(255,255,255,0.9)" />
                 </View>
-                <Text className="mt-6 text-white text-[26px] font-extrabold">AO 50.000.00kz</Text>
+                <Text className="mt-6 text-white text-[26px] font-extrabold">
+                  {currency} {(balance / 100).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </Text>
 
                 <View className="mt-3 flex-row items-center justify-between">
                   <Text className="text-white/85 text-[12px] tracking-widest">
@@ -141,13 +248,13 @@ export default function CarteiraScreen() {
             </View>
 
             <View className="mt-6 flex-row items-center gap-3">
-              <TouchableOpacity activeOpacity={0.85} className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2">
-                <Text className="text-white text-[12px] font-bold mr-2">Levantar</Text>
-                <Ionicons name="wallet-outline" size={16} color="white" />
+              <TouchableOpacity activeOpacity={0.85} onPress={handleOnboardStripe} className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2">
+                <Text className="text-white text-[12px] font-bold mr-2">Ativar recebimentos</Text>
+                <Ionicons name="link-outline" size={16} color="white" />
               </TouchableOpacity>
 
-              <TouchableOpacity activeOpacity={0.85} className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2">
-                <Text className="text-white text-[12px] font-bold mr-2">Histórico</Text>
+              <TouchableOpacity activeOpacity={0.85} onPress={loadPayments} className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2">
+                <Text className="text-white text-[12px] font-bold mr-2">{loading ? 'Atualizando...' : 'Atualizar'}</Text>
                 <Ionicons name="time-outline" size={16} color="white" />
               </TouchableOpacity>
 
@@ -190,19 +297,27 @@ export default function CarteiraScreen() {
             icon="card-outline"
             title="Sem movimentos"
             description={
-              filter === 'all'
-                ? 'Quando houver movimentações, elas aparecem aqui.'
-                : 'Não há movimentos para este filtro.'
+              paymentsTableMissing
+                ? 'Para o histórico funcionar, crie a tabela "public.payments" no Supabase (SQL em SUPABASE_SETUP.md).'
+                : filter === 'all'
+                  ? 'Quando houver movimentações, elas aparecem aqui.'
+                  : 'Não há movimentos para este filtro.'
             }
-            actionLabel={filter !== 'all' ? 'Ver todos' : undefined}
-            onAction={filter !== 'all' ? () => setFilter('all') : undefined}
+            actionLabel={paymentsTableMissing ? 'Tentar novamente' : filter !== 'all' ? 'Ver todos' : undefined}
+            onAction={
+              paymentsTableMissing
+                ? loadPayments
+                : filter !== 'all'
+                  ? () => setFilter('all')
+                  : undefined
+            }
           />
         }
         renderItem={({ item }) => {
           const isPositive = item.amount >= 0;
           return (
             <View className="flex-row items-center rounded-3xl bg-white px-4 py-4" style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
-              <Image source={item.avatar} className="h-12 w-12 rounded-full" resizeMode="cover" />
+              <Image source={item.avatar || ProfileImage} className="h-12 w-12 rounded-full" resizeMode="cover" />
               <View className="ml-3 flex-1">
                 <Text className="text-[13px] font-extrabold text-gray-900">{item.name}</Text>
                 <Text className="mt-1 text-[11px] text-gray-400">
@@ -211,7 +326,7 @@ export default function CarteiraScreen() {
                 </Text>
               </View>
               <Text className={`text-[12px] font-extrabold ${isPositive ? 'text-brand-cyan' : 'text-red-500'}`}>
-                {formatKz(item.amount)}
+                {formatKz(item.amount / 100)} {currency}
               </Text>
             </View>
           );

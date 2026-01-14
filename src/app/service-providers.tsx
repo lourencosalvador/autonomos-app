@@ -1,47 +1,173 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
-import { Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { FlatList } from 'react-native-gesture-handler';
-import { PROVIDERS } from '../data/providers';
 import { EmptyState } from '../components/EmptyState';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { useAuthStore } from '../stores/authStore';
+import { useRequestsStore } from '../stores/requestsStore';
+import { useFocusEffect } from '@react-navigation/native';
 
-const stars = [1, 1, 1, 1, 0];
+type ProviderRow = {
+  id: string;
+  name: string | null;
+  avatar_url: string | null;
+  work_area?: string | null;
+};
 
-function clampRating(r: number) {
-  if (r >= 4.75) return 5;
-  if (r >= 4.25) return 4;
-  if (r >= 3.75) return 3;
-  if (r >= 3.25) return 2;
-  return 1;
+const AvatarFallback = { uri: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200' };
+
+function normalizeText(s: string) {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    // remove acentos
+    .replace(/\p{Diacritic}/gu, '')
+    .trim();
+}
+
+function categoryPatterns(serviceName: string) {
+  const base = normalizeText(serviceName);
+  const patterns = new Set<string>();
+  if (base) patterns.add(base);
+
+  // Tokens (ex: "design grafico" -> "design", "grafico")
+  base
+    .split(/\s+/g)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3)
+    .forEach((t) => patterns.add(t));
+
+  // Stems curtos para pegar variações ("fotografia" vs "fotografo")
+  base
+    .split(/\s+/g)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 5)
+    .forEach((t) => patterns.add(t.slice(0, 6)));
+
+  // Mapeamentos comuns (ex: Fotografia ↔ Fotógrafo ↔ foto)
+  if (base.includes('fot')) {
+    patterns.add('foto');
+    patterns.add('fotograf');
+  }
+  if (base.includes('cabel')) {
+    patterns.add('cabel');
+    patterns.add('corte');
+    patterns.add('salao');
+  }
+  if (base.includes('barb')) {
+    patterns.add('barb');
+    patterns.add('barbear');
+    patterns.add('barbearia');
+    patterns.add('corte');
+  }
+  if (base.includes('pastel')) {
+    patterns.add('pastel');
+    patterns.add('pastelar');
+    patterns.add('doce');
+    patterns.add('bolo');
+    patterns.add('confeitar');
+    patterns.add('confeitaria');
+  }
+  if (base.includes('cocktail') || base.includes('coquetel')) {
+    patterns.add('cocktail');
+    patterns.add('coquetel');
+    patterns.add('bar');
+    patterns.add('bartend');
+    patterns.add('drink');
+    patterns.add('mixolog');
+  }
+  if (base.includes('design') || base.includes('graf')) {
+    patterns.add('design');
+    patterns.add('graf');
+    patterns.add('branding');
+    patterns.add('logo');
+  }
+
+  // remove vazios / caracteres problemáticos pro filtro OR
+  return Array.from(patterns)
+    .map((p) => p.replace(/[(),]/g, '').trim())
+    .filter(Boolean);
 }
 
 export default function ServiceProvidersScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ serviceName?: string }>();
+  const user = useAuthStore((s) => s.user);
+  const requests = useRequestsStore((s) => s.requests);
+  const fetchRequests = useRequestsStore((s) => s.fetchRequests);
 
   const serviceName = (params.serviceName || 'Fotografia').toString();
-  const title = serviceName.toLowerCase().includes('foto') ? 'Fotógrafos' : `${serviceName}s`;
+  const title = `Prestadores de ${serviceName}`;
 
   const [query, setQuery] = useState('');
-  const [minRating, setMinRating] = useState<0 | 4 | 5>(0);
+  const [loading, setLoading] = useState(true);
+  const [providers, setProviders] = useState<ProviderRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadProviders = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      if (!isSupabaseConfigured) {
+        setProviders([]);
+        setError('Supabase não configurado.');
+        return;
+      }
+
+      // Importante: o Postgres `ILIKE` não é "accent-insensitive" por padrão.
+      // Para suportar "Fotógrafo" vs "Fotografia", buscamos os prestadores e filtramos no app com normalizeText().
+      const patterns = categoryPatterns(serviceName).map(normalizeText);
+
+      const { data, error: sbError } = await supabase
+        .from('profiles')
+        .select('id, name, avatar_url, work_area')
+        .eq('role', 'professional')
+        .order('updated_at', { ascending: false });
+
+      if (sbError) {
+        // Ajuda a debugar RLS/config
+        throw new Error(sbError.message);
+      }
+      const list = ((data || []) as any as ProviderRow[]).filter((p) => {
+        const area = normalizeText(p.work_area || '');
+        if (!area) return false;
+        return patterns.some((pat) => area.includes(pat));
+      });
+      setProviders(list);
+    } catch (e) {
+      setProviders([]);
+      setError(e instanceof Error ? e.message : 'Não foi possível carregar os prestadores.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadProviders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceName]);
+
+  useFocusEffect(
+    useMemo(() => {
+      return () => {
+        if (!user?.id) return;
+        fetchRequests(user.id).catch(() => {});
+      };
+    }, [fetchRequests, user?.id])
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = PROVIDERS.filter((p) => {
-      const okName = !q || p.name.toLowerCase().includes(q);
-      const okRating = minRating === 0 || p.rating >= minRating;
-      return okName && okRating;
+    const list = providers.filter((p) => {
+      const name = (p.name || '').toLowerCase();
+      const area = (p.work_area || '').toLowerCase();
+      return !q || name.includes(q) || area.includes(q);
     });
-
-    return list.sort((a, b) => {
-      const aEdson = a.name.toLowerCase().includes('edson') ? 1 : 0;
-      const bEdson = b.name.toLowerCase().includes('edson') ? 1 : 0;
-      if (aEdson !== bEdson) return bEdson - aEdson;
-      return b.rating - a.rating;
-    });
-  }, [minRating, query]);
+    return list.sort((a, b) => (b.name || '').localeCompare(a.name || ''));
+  }, [providers, query]);
 
   return (
     <View className="flex-1 bg-white">
@@ -81,32 +207,14 @@ export default function ServiceProvidersScreen() {
             <Ionicons name="search" size={20} color="#9CA3AF" />
           </View>
         </View>
-
-        <View className="mt-4 flex-row gap-3">
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => setMinRating(0)}
-            className={`px-4 py-2 rounded-full ${minRating === 0 ? 'bg-brand-cyan' : 'bg-gray-100'}`}
-          >
-            <Text className={`text-[12px] font-bold ${minRating === 0 ? 'text-white' : 'text-gray-600'}`}>Todos</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => setMinRating(4)}
-            className={`px-4 py-2 rounded-full ${minRating === 4 ? 'bg-brand-cyan' : 'bg-gray-100'}`}
-          >
-            <Text className={`text-[12px] font-bold ${minRating === 4 ? 'text-white' : 'text-gray-600'}`}>4+</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => setMinRating(5)}
-            className={`px-4 py-2 rounded-full ${minRating === 5 ? 'bg-brand-cyan' : 'bg-gray-100'}`}
-          >
-            <Text className={`text-[12px] font-bold ${minRating === 5 ? 'text-white' : 'text-gray-600'}`}>5</Text>
-          </TouchableOpacity>
-        </View>
       </View>
 
+      {loading ? (
+        <View className="flex-1 items-center justify-center bg-white">
+          <ActivityIndicator size="large" color="#00E7FF" />
+          <Text className="mt-3 text-[13px] font-bold text-gray-500">Carregando prestadores...</Text>
+        </View>
+      ) : (
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id}
@@ -117,35 +225,70 @@ export default function ServiceProvidersScreen() {
           <EmptyState
             icon="people-outline"
             title="Nenhum prestador encontrado"
-            description="Tente mudar o filtro de avaliação ou pesquisar por outro nome."
-            actionLabel="Limpar filtros"
+            description={
+              error
+                ? error
+                : query
+                  ? `Nenhum resultado para "${query}" em ${serviceName}.`
+                  : `Ainda não existe nenhum prestador cadastrado para ${serviceName}.`
+            }
+            actionLabel={error ? 'Tentar novamente' : query ? 'Limpar pesquisa' : 'Atualizar'}
             onAction={() => {
-              setQuery('');
-              setMinRating(0);
+              if (error) return loadProviders();
+              if (query) return setQuery('');
+              return loadProviders();
             }}
           />
         }
         renderItem={({ item }) => (
           <View className="flex-row items-center rounded-2xl bg-white px-4 py-3" style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
-            <Image source={item.avatar} className="h-12 w-12 rounded-full" resizeMode="cover" />
+            <Image source={item.avatar_url ? { uri: item.avatar_url } : AvatarFallback} className="h-12 w-12 rounded-full" resizeMode="cover" />
             <View className="ml-3 flex-1">
-              <Text className="text-[13px] font-extrabold text-gray-900">{item.name}</Text>
-              <Text className="text-[11px] text-gray-400">{item.jobTitle}</Text>
-              <View className="mt-2 flex-row items-center gap-1">
-                {stars.map((_, idx) => {
-                  const v = idx < clampRating(item.rating);
-                  return (
-                    <Ionicons
-                      key={idx}
-                      name={v ? 'star' : 'star-outline'}
-                      size={14}
-                      color={v ? '#FBBF24' : '#D1D5DB'}
-                    />
-                  );
-                })}
-              </View>
+              <Text className="text-[13px] font-extrabold text-gray-900">{item.name || 'Prestador'}</Text>
+              <Text className="text-[11px] text-gray-400">{item.work_area || serviceName}</Text>
             </View>
 
+            {(() => {
+              const existing =
+                user?.role === 'client' && user?.id
+                  ? requests
+                      .filter(
+                        (r) =>
+                          r.clientId === user.id &&
+                          r.providerId === item.id &&
+                          r.serviceName === serviceName &&
+                          r.status !== 'cancelled'
+                      )
+                      .sort((a, b) => {
+                        const ta = Date.parse(a.createdAt);
+                        const tb = Date.parse(b.createdAt);
+                        if (Number.isFinite(ta) && Number.isFinite(tb)) return tb - ta;
+                        // fallback determinístico quando parse falhar
+                        return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+                      })[0]
+                  : null;
+
+              if (existing) {
+                // Regra: se estiver PENDENTE ou ACEITE, não deixa criar outro; mostra status (clicável).
+                // Se estiver REJEITADO, deixa pedir novamente (mostra "Termos").
+                if (existing.status === 'pending' || existing.status === 'accepted') {
+                  const label = existing.status === 'accepted' ? 'Aceite' : 'Pendente';
+                  const bg = existing.status === 'accepted' ? 'bg-cyan-100' : 'bg-gray-200';
+                  const fg = existing.status === 'accepted' ? 'text-brand-cyan' : 'text-gray-500';
+
+                  return (
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => router.push({ pathname: '/request-details', params: { requestId: existing.id } })}
+                      className={`px-5 py-2 rounded-full ${bg}`}
+                    >
+                      <Text className={`text-[12px] font-extrabold ${fg}`}>{label}</Text>
+                    </TouchableOpacity>
+                  );
+                }
+              }
+
+              return (
             <TouchableOpacity
               activeOpacity={0.85}
               onPress={() =>
@@ -154,8 +297,9 @@ export default function ServiceProvidersScreen() {
                   params: {
                     serviceName,
                     providerId: item.id,
-                    providerName: item.name,
-                    providerJob: item.jobTitle,
+                    providerName: item.name || 'Prestador',
+                    providerJob: item.work_area || serviceName,
+                    providerAvatarUrl: item.avatar_url || undefined,
                   },
                 })
               }
@@ -163,9 +307,12 @@ export default function ServiceProvidersScreen() {
             >
               <Text className="text-[12px] font-extrabold text-white">Termos</Text>
             </TouchableOpacity>
+              );
+            })()}
           </View>
         )}
       />
+      )}
     </View>
   );
 }

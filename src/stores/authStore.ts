@@ -12,12 +12,25 @@ function assertSupabaseConfigured() {
   }
 }
 
-async function ensureRoleNotNull(userId: string, currentRole: ProfileRole | null) {
-  if (currentRole) return currentRole;
-  // Regra: nunca perguntamos no login. Se não houver role, assumimos "client" por padrão.
-  const fallback: ProfileRole = 'client';
-  await supabase.from('profiles').upsert({ id: userId, role: fallback }, { onConflict: 'id' });
-  return fallback;
+async function inferAndFixRole(userId: string, profile: ProfileRow | null) {
+  const current = (profile?.role as ProfileRole | null) || null;
+  const workArea = String((profile as any)?.work_area || '').trim();
+
+  // Inferência segura:
+  // - Se tiver work_area preenchido, tratamos como professional (só aparece para prestador no app).
+  // - Caso contrário, client.
+  const inferred: ProfileRole = workArea ? 'professional' : 'client';
+
+  // Nunca rebaixa profissional para client automaticamente.
+  if (current === 'professional') return 'professional';
+
+  // Se estiver null ou marcado como client mas tem work_area, corrigimos para professional.
+  if (!current || (current === 'client' && inferred === 'professional')) {
+    await supabase.from('profiles').upsert({ id: userId, role: inferred }, { onConflict: 'id' });
+    return inferred;
+  }
+
+  return current;
 }
 
 export type UserRole = 'client' | 'professional';
@@ -30,6 +43,7 @@ export interface User {
   avatar?: string;
   phone?: string | null;
   workArea?: string | null;
+  autoAcceptMessage?: string | null;
   gender?: string | null;
   birthDate?: string | null; // YYYY-MM-DD
 }
@@ -42,10 +56,16 @@ interface AuthState {
   
   init: () => Promise<() => void>;
   refreshProfile: () => Promise<void>;
-  updateProfile: (data: { name?: string; phone?: string | null; avatarUrl?: string | null; workArea?: string | null; gender?: string | null; birthDate?: string | null; }) => Promise<void>;
+  updateProfile: (data: { name?: string; phone?: string | null; avatarUrl?: string | null; workArea?: string | null; autoAcceptMessage?: string | null; gender?: string | null; birthDate?: string | null; }) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (name: string, email: string, password: string, role: UserRole) => Promise<void>;
-  signInWithOAuth: (provider: 'google' | 'apple', opts?: { role?: UserRole }) => Promise<void>;
+  signUp: (
+    name: string,
+    email: string,
+    password: string,
+    role: UserRole,
+    opts?: { phone?: string | null; workArea?: string | null; gender?: string | null; birthDate?: string | null }
+  ) => Promise<void>;
+  signInWithOAuth: (provider: 'google' | 'apple', opts?: { role?: UserRole; workArea?: string | null }) => Promise<void>;
   setRole: (role: UserRole) => Promise<void>;
   signOut: () => Promise<void>;
   updateUser: (user: Partial<User>) => void;
@@ -82,7 +102,7 @@ export const useAuthStore = create<AuthState>()(
           let profile: ProfileRow | null = null;
           const { data, error } = await supabase
             .from('profiles')
-            .select('id, role, name, phone, avatar_url, work_area, gender, birth_date, created_at, updated_at')
+            .select('id, role, name, phone, avatar_url, work_area, auto_accept_message, gender, birth_date, created_at, updated_at')
             .eq('id', sbUser.id)
             .maybeSingle();
 
@@ -103,6 +123,7 @@ export const useAuthStore = create<AuthState>()(
                 phone: null,
                 avatar_url: metaAvatar,
                 work_area: null,
+                auto_accept_message: null,
                 gender: null,
                 birth_date: null,
               },
@@ -115,13 +136,14 @@ export const useAuthStore = create<AuthState>()(
               phone: null,
               avatar_url: metaAvatar,
               work_area: null,
+              auto_accept_message: null,
               gender: null,
               birth_date: null,
             };
           }
 
           const safeProfile = profile;
-          const role = await ensureRoleNotNull(sbUser.id, ((safeProfile?.role as ProfileRole | null) || null));
+          const role = await inferAndFixRole(sbUser.id, safeProfile as any);
 
           set({
             user: {
@@ -132,6 +154,7 @@ export const useAuthStore = create<AuthState>()(
               avatar: safeProfile?.avatar_url || metaAvatar || undefined,
               phone: safeProfile?.phone || null,
               workArea: (safeProfile as any)?.work_area ?? null,
+              autoAcceptMessage: (safeProfile as any)?.auto_accept_message ?? null,
               gender: (safeProfile as any)?.gender ?? null,
               birthDate: (safeProfile as any)?.birth_date ?? null,
             },
@@ -162,14 +185,24 @@ export const useAuthStore = create<AuthState>()(
         const current = get().user;
         if (!current) return;
         if (!isSupabaseConfigured) return;
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('id, role, name, phone, avatar_url, work_area, gender, birth_date')
-          .eq('id', current.id)
-          .maybeSingle();
+        const fetch = async () =>
+          supabase
+            .from('profiles')
+            .select('id, role, name, phone, avatar_url, work_area, auto_accept_message, gender, birth_date')
+            .eq('id', current.id)
+            .maybeSingle();
+
+        let { data, error } = await fetch();
+        if ((error || !data) && current.id) {
+          // Se não existir ainda, cria um profile mínimo (evita falhas em update/avatar)
+          await supabase.from('profiles').upsert({ id: current.id }, { onConflict: 'id' });
+          const retry = await fetch();
+          data = retry.data as any;
+          error = retry.error as any;
+        }
         if (error || !data) return;
-        const p: any = data;
-        const ensuredRole = await ensureRoleNotNull(current.id, p.role ?? null);
+        const p: any = data as any;
+        const ensuredRole = await inferAndFixRole(current.id, p as any);
         set({
           user: {
             ...current,
@@ -178,13 +211,14 @@ export const useAuthStore = create<AuthState>()(
             phone: p.phone ?? current.phone ?? null,
             avatar: p.avatar_url ?? current.avatar,
             workArea: p.work_area ?? current.workArea ?? null,
+            autoAcceptMessage: p.auto_accept_message ?? current.autoAcceptMessage ?? null,
             gender: p.gender ?? current.gender ?? null,
             birthDate: p.birth_date ?? current.birthDate ?? null,
           },
         });
       },
 
-      updateProfile: async ({ name, phone, avatarUrl, workArea, gender, birthDate }) => {
+      updateProfile: async ({ name, phone, avatarUrl, workArea, autoAcceptMessage, gender, birthDate }) => {
         const current = get().user;
         if (!current) return;
         assertSupabaseConfigured();
@@ -195,14 +229,15 @@ export const useAuthStore = create<AuthState>()(
           if (phone !== undefined) payload.phone = phone;
           if (avatarUrl !== undefined) payload.avatar_url = avatarUrl;
           if (workArea !== undefined) payload.work_area = workArea;
+          if (autoAcceptMessage !== undefined) payload.auto_accept_message = autoAcceptMessage;
           if (gender !== undefined) payload.gender = gender;
           if (birthDate !== undefined) payload.birth_date = birthDate;
 
+          // Upsert para garantir que a linha exista (evita erro quando profiles ainda não tem row)
           const { data, error } = await supabase
             .from('profiles')
-            .update(payload)
-            .eq('id', current.id)
-            .select('id, role, name, phone, avatar_url, work_area, gender, birth_date')
+            .upsert({ id: current.id, ...payload }, { onConflict: 'id' })
+            .select('id, role, name, phone, avatar_url, work_area, auto_accept_message, gender, birth_date')
             .maybeSingle();
           if (error) throw error;
 
@@ -215,6 +250,7 @@ export const useAuthStore = create<AuthState>()(
               phone: p.phone ?? current.phone ?? null,
               avatar: p.avatar_url ?? current.avatar,
               workArea: p.work_area ?? current.workArea ?? null,
+              autoAcceptMessage: p.auto_accept_message ?? current.autoAcceptMessage ?? null,
               gender: p.gender ?? current.gender ?? null,
               birthDate: p.birth_date ?? current.birthDate ?? null,
             },
@@ -249,7 +285,13 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      signUp: async (name: string, email: string, password: string, role: UserRole) => {
+      signUp: async (
+        name: string,
+        email: string,
+        password: string,
+        role: UserRole,
+        opts?: { phone?: string | null; workArea?: string | null; gender?: string | null; birthDate?: string | null }
+      ) => {
         set({ isLoading: true });
         
         try {
@@ -270,8 +312,11 @@ export const useAuthStore = create<AuthState>()(
                 id: data.user.id,
                 role,
                 name,
-                phone: null,
+                phone: opts?.phone ?? null,
                 avatar_url: (data.user.user_metadata as any)?.avatar_url || null,
+                work_area: opts?.workArea ?? null,
+                gender: opts?.gender ?? null,
+                birth_date: opts?.birthDate ?? null,
               },
               { onConflict: 'id' }
             );
@@ -292,7 +337,7 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      signInWithOAuth: async (provider: 'google' | 'apple', opts?: { role?: UserRole }) => {
+      signInWithOAuth: async (provider: 'google' | 'apple', opts?: { role?: UserRole; workArea?: string | null }) => {
         set({ isLoading: true });
         try {
           assertSupabaseConfigured();
@@ -330,17 +375,18 @@ export const useAuthStore = create<AuthState>()(
           // persistimos no profile imediatamente.
           const desiredRole = opts?.role;
           const sbUser = ex.data?.session?.user;
-          if (desiredRole && sbUser?.id) {
+          if ((desiredRole || opts?.workArea) && sbUser?.id) {
             const meta: any = sbUser.user_metadata || {};
             const metaName = meta.full_name || meta.name || null;
             const metaAvatar = meta.avatar_url || meta.picture || meta.avatar || null;
             await supabase.from('profiles').upsert(
               {
                 id: sbUser.id,
-                role: desiredRole,
+                role: desiredRole ?? undefined,
                 name: metaName,
                 phone: null,
                 avatar_url: metaAvatar,
+                work_area: opts?.workArea ?? null,
               },
               { onConflict: 'id' }
             );

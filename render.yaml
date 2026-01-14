@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: autonomos-backend
+    env: node
+    rootDir: server
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Opcional: fixa Node 20+ (recomendado para compatibilidade)
+      - key: NODE_VERSION
+        value: 20

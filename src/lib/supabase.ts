@@ -42,12 +42,68 @@ export type ProfileRow = {
   name: string | null;
   phone: string | null;
   avatar_url: string | null;
+  stripe_account_id?: string | null;
   // Campos pessoais opcionais (se existirem na tabela)
   work_area?: string | null;
+  auto_accept_message?: string | null;
   gender?: string | null;
   birth_date?: string | null; // YYYY-MM-DD
   created_at?: string;
   updated_at?: string;
+};
+
+export type RequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed';
+
+export type RequestRow = {
+  id: string;
+  client_id: string;
+  client_name: string;
+  client_avatar_url?: string | null;
+  provider_id: string;
+  provider_name: string;
+  provider_avatar_url?: string | null;
+  service_name: string;
+  description: string;
+  location?: string | null;
+  service_date: string | null;
+  service_time: string | null;
+  status: RequestStatus;
+  // Pagamentos
+  price_amount?: number | null;
+  currency?: string | null;
+  payment_status?: string | null;
+  stripe_payment_intent_id?: string | null;
+  paid_at?: string | null;
+  accepted_at?: string | null;
+  rejected_at?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReviewRow = {
+  id: string;
+  request_id: string;
+  provider_id: string;
+  client_id: string;
+  client_avatar_url?: string | null;
+  rating: number; // 1..5
+  comment: string | null;
+  created_at: string;
+};
+
+export type PaymentRow = {
+  id: string;
+  request_id: string | null;
+  client_id: string | null;
+  provider_id: string | null;
+  amount: number;
+  currency: string;
+  status: string;
+  stripe_payment_intent_id: string;
+  paid_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 

@@ -7,7 +7,19 @@ type Body = {
 };
 
 function toStreamSafeUserId(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9@_-]/g, '_');
+  const safe = value.toLowerCase().replace(/[^a-z0-9@_-]/g, '_');
+  // Stream limita user id a 64 chars
+  return safe.length <= 64 ? safe : `u_${fnv1a64(safe)}`;
+}
+
+function fnv1a64(input: string) {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= BigInt(input.charCodeAt(i));
+    hash = (hash * prime) & 0xffffffffffffffffn;
+  }
+  return hash.toString(36);
 }
 
 export async function streamTokenRoute(req: any, res: any) {

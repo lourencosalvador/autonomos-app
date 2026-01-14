@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
 import type { Channel as StreamChannelType } from 'stream-chat';
 import { Channel, MessageInput, MessageList, useChatContext } from 'stream-chat-expo';
@@ -12,12 +12,22 @@ import { useStreamStore } from '../stores/streamStore';
 
 export default function ChatScreen() {
   const router = useRouter();
-  const { cid } = useLocalSearchParams<{ cid?: string }>();
+  const { cid, otherUserId: otherUserIdParam, otherUserName, initialMessage, sendKey } = useLocalSearchParams<{
+    cid?: string;
+    otherUserId?: string;
+    otherUserName?: string;
+    initialMessage?: string;
+    sendKey?: string;
+  }>();
   const { user } = useAuthStore();
   const streamReady = useStreamStore((s) => s.ready);
   const { client } = useChatContext();
 
   const [channel, setChannel] = useState<StreamChannelType | null>(null);
+  const [channelError, setChannelError] = useState<string | null>(null);
+  const sentRef = useRef<Record<string, boolean>>({});
+  const retryKey = useStreamStore((s) => s.retryKey);
+  const retryStream = useStreamStore((s) => s.retry);
 
   if (!streamReady) {
     return (
@@ -45,9 +55,11 @@ export default function ChatScreen() {
 
   const otherUserId = useMemo(() => {
     if (!user) return null;
+    const raw = (otherUserIdParam || '').toString().trim();
+    if (raw) return toStreamSafeUserId(raw);
     const other = MOCK_USERS.find((u) => u.email !== user.email);
     return other?.email ? toStreamSafeUserId(other.email) : null;
-  }, [user]);
+  }, [user, otherUserIdParam]);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +67,7 @@ export default function ChatScreen() {
       if (!user) return;
 
       try {
+        setChannelError(null);
         let ch: StreamChannelType;
 
         if (cid && typeof cid === 'string' && cid.includes(':')) {
@@ -69,10 +82,34 @@ export default function ChatScreen() {
           ch = client.channel('messaging', channelId, { members });
         }
 
-        await ch.watch();
+        // Timeout simples para não ficar "Carregando..." infinito
+        await Promise.race([
+          ch.watch(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 12000)),
+        ]);
+        // Envia primeira mensagem automaticamente (somente se o canal ainda não tiver mensagens)
+        const text = (initialMessage || '').toString().trim();
+        const key = (sendKey || '').toString().trim();
+        if (text && key && !sentRef.current[key]) {
+          const hasMessages = (ch.state?.messages?.length || 0) > 0;
+          if (!hasMessages) {
+            try {
+              await ch.sendMessage({ text });
+            } catch {}
+          }
+          sentRef.current[key] = true;
+        }
         if (!cancelled) setChannel(ch);
-      } catch {
-        if (!cancelled) setChannel(null);
+      } catch (e: any) {
+        if (!cancelled) {
+          setChannel(null);
+          const raw = e instanceof Error ? e.message : String(e);
+          const msg =
+            e instanceof Error && e.message === 'TIMEOUT'
+              ? 'Demorou demais para carregar a conversa.'
+              : 'Não foi possível carregar a conversa.';
+          setChannelError(`${msg}\n\nDetalhes: ${raw}`);
+        }
       }
     }
 
@@ -80,7 +117,7 @@ export default function ChatScreen() {
     return () => {
       cancelled = true;
     };
-  }, [cid, client, otherUserId, user]);
+  }, [cid, client, otherUserId, user, initialMessage, sendKey, retryKey]);
 
   return (
     <View className="flex-1 bg-white">
@@ -105,9 +142,18 @@ export default function ChatScreen() {
       </View>
 
       {!channel ? (
-        <View className="flex-1 items-center justify-center">
+        <View className="flex-1 items-center justify-center px-6">
           <ActivityIndicator size="large" color="#00E7FF" />
-          <Text className="mt-3 text-[13px] font-bold text-gray-500">Carregando conversa...</Text>
+          <Text className="mt-3 text-[13px] font-bold text-gray-500">
+            {channelError ? channelError : 'Carregando conversa...'}
+          </Text>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => retryStream()}
+            className="mt-6 h-11 px-6 items-center justify-center rounded-full bg-brand-cyan"
+          >
+            <Text className="text-[13px] font-extrabold text-white">Tentar novamente</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <View style={{ flex: 1 }}>
