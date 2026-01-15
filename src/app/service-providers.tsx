@@ -293,7 +293,7 @@ export default function ServiceProvidersScreen() {
               activeOpacity={0.85}
               onPress={() =>
                 router.push({
-                  pathname: '/termos-servico',
+                  pathname: '/perfil-prestador',
                   params: {
                     serviceName,
                     providerId: item.id,
@@ -305,7 +305,7 @@ export default function ServiceProvidersScreen() {
               }
               className="px-5 py-2 rounded-full bg-brand-cyan"
             >
-              <Text className="text-[12px] font-extrabold text-white">Termos</Text>
+              <Text className="text-[12px] font-extrabold text-white">Ver perfil</Text>
             </TouchableOpacity>
               );
             })()}

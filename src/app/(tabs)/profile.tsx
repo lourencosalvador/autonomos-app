@@ -6,11 +6,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Image, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { Easing, interpolate, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
-import { getRandomPhotos } from '../../services/unsplashService';
 import { useAuthStore } from '../../stores/authStore';
 import { toast } from '../../lib/sonner';
 import { isSupabaseConfigured, supabase } from '../../lib/supabase';
 import { EmptyState } from '../../components/EmptyState';
+import { PortfolioView } from '../../components/portfolio/PortfolioView';
 
 const ProfileImage = require('../../../assets/images/Profile.jpg');
 
@@ -314,15 +314,12 @@ function ProfessionalProfile({ initialTab }: { initialTab?: string }) {
   const updateProfile = useAuthStore((s) => s.updateProfile);
   const refreshProfile = useAuthStore((s) => s.refreshProfile);
   const [tab, setTab] = useState<'info' | 'portfolio' | 'reviews'>('info');
-  const [photos, setPhotos] = useState<string[]>([]);
-  const [headerAvatar, setHeaderAvatar] = useState<string | null>(null);
   const [reviews, setReviews] = useState<any[]>([]);
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [autoMsgOpen, setAutoMsgOpen] = useState(false);
   const [autoMsg, setAutoMsg] = useState('');
 
   useEffect(() => {
-    load();
     refreshProfile().catch(() => {});
   }, []);
 
@@ -367,39 +364,6 @@ function ProfessionalProfile({ initialTab }: { initialTab?: string }) {
     };
   }, [tab, user?.id]);
 
-  const load = async () => {
-    const data = await getRandomPhotos(24);
-    const urls = data.map((p) => p.url).filter(Boolean);
-    setPhotos(urls);
-    setHeaderAvatar(urls[0] || null);
-  };
-
-  const handleAddPhotos = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permissão necessária', 'Permita o acesso à galeria para adicionar fotos.');
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsMultipleSelection: true,
-      selectionLimit: 10,
-      quality: 0.9,
-    });
-
-    if (result.canceled) return;
-
-    const uris = result.assets.map((a) => a.uri).filter(Boolean);
-    if (!uris.length) return;
-
-    setPhotos((prev) => {
-      // Coloca as novas fotos no topo para aparecerem imediatamente no grid
-      const merged = [...uris, ...prev];
-      return Array.from(new Set(merged));
-    });
-  };
-
   const avatarUri = user?.avatar || null;
 
   const handleChangeAvatar = async () => {
@@ -429,16 +393,7 @@ function ProfessionalProfile({ initialTab }: { initialTab?: string }) {
     }
   };
 
-  const categories = useMemo(
-    () => [
-      { key: 'street', label: 'Street', uri: photos[2] },
-      { key: 'works', label: 'Works', uri: photos[3] },
-      { key: 'nature', label: 'Nature', uri: photos[4] },
-      { key: 'art', label: 'Art', uri: photos[5] },
-      { key: 'landscape', label: 'Landscape', uri: photos[6] },
-    ],
-    [photos]
-  );
+  // Portfólio agora é real (Supabase): estados + publicações.
 
   const handleSignOut = () => {
     Alert.alert('Sair', 'Tem certeza que deseja sair da sua conta?', [
@@ -579,71 +534,15 @@ function ProfessionalProfile({ initialTab }: { initialTab?: string }) {
           </ScrollView>
         ) : tab === 'portfolio' ? (
           <View className="mt-6 flex-1">
-            <FlatList
-              data={photos}
-              keyExtractor={(uri, idx) => `${uri}-${idx}`}
-              numColumns={3}
-              removeClippedSubviews={false}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingBottom: 140 }}
-              columnWrapperStyle={{ gap: 2 }}
-              ListHeaderComponent={() => (
-                <View>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={{ paddingHorizontal: 4, gap: 18 }}
-                  >
-                    {categories.map((c) => (
-                      <View key={c.key} className="items-center">
-                        <View className="h-16 w-16 rounded-full overflow-hidden bg-gray-200">
-                          <Image
-                            source={{ uri: c.uri || 'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=200' }}
-                            className="h-full w-full"
-                            resizeMode="cover"
-                          />
-                        </View>
-                        <Text className="mt-3 text-[13px] text-gray-300">{c.label}</Text>
-                      </View>
-                    ))}
-                  </ScrollView>
-
-                  <View className="mt-4 h-px bg-gray-200" />
-                  <View style={{ height: 8 }} />
-                </View>
-              )}
-              renderItem={({ item }) => (
-                <View style={{ flex: 1, aspectRatio: 1, marginBottom: 2 }}>
-                  <Image source={{ uri: item }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                </View>
-              )}
-            />
-
-            <View
-              style={{
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                bottom: 26,
-                alignItems: 'center',
-              }}
-              pointerEvents="box-none"
-            >
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={handleAddPhotos}
-                className="h-20 w-20 items-center justify-center rounded-full bg-white"
-                style={{
-                  shadowColor: '#000',
-                  shadowOffset: { width: 0, height: 10 },
-                  shadowOpacity: 0.15,
-                  shadowRadius: 16,
-                  elevation: 6,
-                }}
-              >
-                <Ionicons name="add" size={34} color="#6B7280" />
-              </TouchableOpacity>
-            </View>
+            {user?.id ? (
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
+                <PortfolioView mode="owner" providerId={user.id} accentColors={['#034660', '#00E7FF']} />
+              </ScrollView>
+            ) : (
+              <View className="flex-1 items-center justify-center">
+                <Text className="text-[12px] font-bold text-gray-500">Carregando...</Text>
+              </View>
+            )}
           </View>
         ) : (
           <View className="mt-6 flex-1">
@@ -653,6 +552,7 @@ function ProfessionalProfile({ initialTab }: { initialTab?: string }) {
               </View>
             ) : (
               <FlatList
+                key="reviews-list-1"
                 data={reviews}
                 keyExtractor={(it) => String(it.id)}
                 showsVerticalScrollIndicator={false}

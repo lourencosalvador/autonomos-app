@@ -79,6 +79,10 @@ export default function RootLayout() {
                                 options={{ animation: "slide_from_right" }}
                             />
                             <Stack.Screen
+                                name="perfil-prestador"
+                                options={{ animation: "slide_from_right" }}
+                            />
+                            <Stack.Screen
                                 name="request-details"
                                 options={{ animation: "slide_from_right" }}
                             />

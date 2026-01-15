@@ -22,7 +22,8 @@
         "backgroundColor": "#00E7FF"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.lorrysdev.autonomosapp"
     },
     "web": {
       "bundler": "metro",
@@ -35,6 +36,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f72b2bb1-2a05-463e-b9a4-10f9ffc8af44"
+      }
     }
   }
 }

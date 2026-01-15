@@ -230,7 +230,7 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={() => handleDebugLogin('lourencocardoso007@gmail.com', 'lorrys1234')}
+            onPress={() => handleDebugLogin('makenzegomes@gmailcom', 'makenze1234')}
             activeOpacity={0.7}
             disabled={isLoading}
             className="items-center"

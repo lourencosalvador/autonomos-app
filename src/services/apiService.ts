@@ -82,6 +82,12 @@ export async function createStripePaymentIntent(args: { requestId: string; clien
     paymentIntentId?: string;
     stripeMode?: 'test' | 'live' | 'unknown';
     livemode?: boolean;
+    connect?: {
+      attempted: boolean;
+      used: boolean;
+      destination?: string;
+      reason?: string;
+    };
   };
 }
 

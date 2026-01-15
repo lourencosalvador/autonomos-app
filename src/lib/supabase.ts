@@ -106,4 +106,15 @@ export type PaymentRow = {
   updated_at: string;
 };
 
+// Portfólio / Publicações do prestador
+export type ProviderPostRow = {
+  id: string;
+  provider_id: string;
+  image_url: string;
+  caption: string | null;
+  highlight_title: string | null; // usado para "Estados" (stories/highlights)
+  post_type?: 'post' | 'story' | null; // 'post' = publicação normal, 'story' = sequência/estado
+  created_at: string;
+};
+
 

@@ -1,9 +1,24 @@
 import type { Request, Response } from 'express';
+import type Stripe from 'stripe';
 import { isStripeConfigured, stripe, stripeMode } from '../lib/stripe.js';
 import { isSupabaseAdminConfigured, supabaseAdmin } from '../lib/supabaseAdmin.js';
 
 function badRequest(res: Response, message: string) {
   return res.status(400).json({ ok: false, message });
+}
+
+async function isConnectDestinationReady(accountId: string): Promise<boolean> {
+  if (!stripe) return false;
+  if (!accountId) return false;
+  try {
+    const acct = await stripe.accounts.retrieve(accountId);
+    const caps: any = (acct as any)?.capabilities || {};
+    const transfers = String(caps?.transfers || '').toLowerCase(); // 'active' | 'pending' | 'inactive'
+    // Para destination charges precisamos que transfers esteja ativo (senão a Stripe bloqueia).
+    return transfers === 'active';
+  } catch {
+    return false;
+  }
 }
 
 export async function stripeCreatePaymentIntentRoute(req: Request, res: Response) {
@@ -91,7 +106,7 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
 
     const destination = String((providerProfile as any)?.stripe_account_id || '').trim();
 
-    const pi = await stripe.paymentIntents.create({
+    const baseParams: Stripe.PaymentIntentCreateParams = {
       amount,
       currency,
       // Evita o erro "No valid payment method types..." quando o Dashboard não tem métodos
@@ -103,14 +118,70 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
         provider_id: providerId,
         original_currency: originalCurrency,
       },
-      ...(destination
-        ? {
-            transfer_data: { destination },
-            // Fee do app (exemplo): 10%. Ajuste depois.
-            application_fee_amount: Math.max(1, Math.round(amount * 0.1)),
-          }
-        : {}),
-    });
+    };
+
+    // Connect (destination charge) é opcional e pode falhar se o prestador ainda não ativou recebimentos
+    // (capability transfers / feature stripe_transfers). Para não travar o pagamento do cliente,
+    // fazemos fallback automático para pagamento na conta da plataforma e registramos no "wallet" interno.
+    let pi: Stripe.PaymentIntent;
+    let connectAttempted = false;
+    let connectUsed = false;
+    let connectReason: string | undefined;
+
+    // Só tenta Connect se a conta conectada estiver realmente pronta para transfers.
+    const destinationReady = destination ? await isConnectDestinationReady(destination) : false;
+
+    if (destination && destinationReady) {
+      connectAttempted = true;
+      try {
+        pi = await stripe.paymentIntents.create({
+          ...baseParams,
+          transfer_data: { destination },
+          // Fee do app (exemplo): 10%. Ajuste depois.
+          application_fee_amount: Math.max(1, Math.round(amount * 0.1)),
+        });
+        connectUsed = true;
+      } catch (e: any) {
+        const msg = String(e?.message || '');
+        const code = String(e?.code || '');
+        // Erros comuns quando a conta conectada ainda não está apta a receber transfers
+        const needsTransfers =
+          msg.includes('stripe_balance.stripe_transfers') ||
+          msg.toLowerCase().includes('destination account') ||
+          (msg.toLowerCase().includes('transfers') && msg.toLowerCase().includes('enabled')) ||
+          code === 'account_invalid';
+
+        if (!needsTransfers) throw e;
+
+        connectReason = 'destination_not_eligible_for_transfers';
+        // Fallback: cria PaymentIntent SEM destination (plataforma recebe; wallet interno reflete o valor)
+        pi = await stripe.paymentIntents.create({
+          ...baseParams,
+          metadata: {
+            ...(baseParams.metadata || {}),
+            connect_destination: destination,
+            connect_fallback: 'true',
+            connect_reason: connectReason,
+          },
+        });
+      }
+    } else if (destination && !destinationReady) {
+      // Prestador iniciou onboarding mas ainda não está pronto: não bloqueia o pagamento do cliente.
+      connectAttempted = true;
+      connectUsed = false;
+      connectReason = 'connect_onboarding_incomplete';
+      pi = await stripe.paymentIntents.create({
+        ...baseParams,
+        metadata: {
+          ...(baseParams.metadata || {}),
+          connect_destination: destination,
+          connect_fallback: 'true',
+          connect_reason: connectReason,
+        },
+      });
+    } else {
+      pi = await stripe.paymentIntents.create(baseParams);
+    }
 
     // Persistimos o PI no pedido e criamos (ou atualizamos) o registro de pagamento
     await supabaseAdmin.from('requests').update({ stripe_payment_intent_id: pi.id, payment_status: pi.status }).eq('id', requestId);
@@ -134,6 +205,14 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
       paymentIntentId: pi.id,
       stripeMode,
       livemode: pi.livemode,
+      connect: destination
+        ? {
+            attempted: connectAttempted,
+            used: connectUsed,
+            destination,
+            reason: connectUsed ? undefined : connectReason,
+          }
+        : { attempted: false, used: false },
     });
   } catch (e: any) {
     console.error('[stripe/payment-intent]', e);

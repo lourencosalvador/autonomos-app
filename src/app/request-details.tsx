@@ -111,6 +111,11 @@ export default function RequestDetailsScreen() {
 
       toast.loading('Preparando pagamento...');
       const resp = await createStripePaymentIntent({ requestId: request.id, clientId: user.id });
+      // Se o prestador ainda não ativou recebimentos (Stripe Connect), o backend faz fallback
+      // para não bloquear o pagamento do cliente. Avisamos de forma transparente.
+      if (resp?.connect?.attempted && !resp?.connect?.used) {
+        toast.message('Prestador ainda não ativou recebimentos. O pagamento será registrado na carteira do app.');
+      }
       const serverModeFromPI = resp?.stripeMode || 'unknown';
       if (serverModeFromPI !== 'unknown' && pkMode !== 'unknown' && serverModeFromPI !== pkMode) {
         return toast.error(`Chaves Stripe misturadas: app=${pkMode} e servidor=${serverModeFromPI}.`);

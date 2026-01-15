@@ -70,6 +70,80 @@ on storage.objects for delete
 using (bucket_id = 'avatars' and auth.uid() = owner);
 ```
 
+### Portfólio do prestador (Publicações + Estados)
+
+Criar um bucket no Supabase Storage chamado **`portfolio`** e marcar como **Public** (para conseguirmos usar `getPublicUrl()`).
+
+Políticas de Storage (recomendado):
+
+```sql
+-- Ler (público) os ficheiros do bucket portfolio
+create policy "portfolio_select_public"
+on storage.objects for select
+using (bucket_id = 'portfolio');
+
+-- Upload: apenas o utilizador logado pode inserir (owner = auth.uid())
+create policy "portfolio_insert_own"
+on storage.objects for insert
+with check (bucket_id = 'portfolio' and auth.uid() = owner);
+
+-- Update/Delete: apenas o utilizador logado pode alterar/apagar os seus ficheiros
+create policy "portfolio_update_own"
+on storage.objects for update
+using (bucket_id = 'portfolio' and auth.uid() = owner);
+
+create policy "portfolio_delete_own"
+on storage.objects for delete
+using (bucket_id = 'portfolio' and auth.uid() = owner);
+```
+
+Tabela `provider_posts` (publicações do prestador; usada para grid + estados/destaques):
+
+```sql
+create table if not exists public.provider_posts (
+  id uuid primary key default gen_random_uuid(),
+  provider_id uuid not null references public.profiles(id) on delete cascade,
+  image_url text not null,
+  caption text null,
+  highlight_title text null, -- ex: "Elegância", "Destaques", etc
+  post_type text not null default 'post' check (post_type in ('post','story')),
+  created_at timestamptz not null default now()
+);
+
+-- Se a tabela já existe no teu projeto, adiciona a coluna (safe):
+alter table public.provider_posts add column if not exists post_type text;
+update public.provider_posts set post_type = 'post' where post_type is null;
+alter table public.provider_posts
+  add constraint provider_posts_post_type_check
+  check (post_type in ('post','story'));
+
+create index if not exists provider_posts_provider_id_idx on public.provider_posts (provider_id, created_at desc);
+
+alter table public.provider_posts enable row level security;
+
+-- SELECT: qualquer utilizador pode ver as publicações (perfil público do prestador)
+drop policy if exists "provider_posts_select_public" on public.provider_posts;
+create policy "provider_posts_select_public"
+on public.provider_posts for select
+using (true);
+
+-- INSERT/UPDATE/DELETE: apenas o próprio prestador (auth.uid() = provider_id)
+drop policy if exists "provider_posts_insert_owner" on public.provider_posts;
+create policy "provider_posts_insert_owner"
+on public.provider_posts for insert
+with check (auth.uid() = provider_id);
+
+drop policy if exists "provider_posts_update_owner" on public.provider_posts;
+create policy "provider_posts_update_owner"
+on public.provider_posts for update
+using (auth.uid() = provider_id);
+
+drop policy if exists "provider_posts_delete_owner" on public.provider_posts;
+create policy "provider_posts_delete_owner"
+on public.provider_posts for delete
+using (auth.uid() = provider_id);
+```
+
 ### Tabela `requests` (Pedidos de serviço)
 
 O app vai usar uma tabela `public.requests` para armazenar os pedidos e seus estados:
