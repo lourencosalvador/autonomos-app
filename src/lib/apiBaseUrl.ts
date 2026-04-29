@@ -63,5 +63,3 @@ export function getApiBaseUrl() {
 
   return base.replace(/\/$/, '');
 }
-
-

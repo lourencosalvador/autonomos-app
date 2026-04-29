@@ -1,7 +1,10 @@
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// Carrega variáveis do arquivo .env do diretório atual (server/)
-// IMPORTANTE: este arquivo deve ser importado ANTES de qualquer outro módulo que use process.env
-dotenv.config();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Carrega variáveis do .env na raiz do projeto (um nível acima de server/)
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 

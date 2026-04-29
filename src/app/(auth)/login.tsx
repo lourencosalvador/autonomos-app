@@ -219,7 +219,7 @@ export default function LoginScreen() {
 
         <View className="mt-2 items-center gap-2">
           <TouchableOpacity
-            onPress={() => handleDebugLogin('makendragomes@gmail.com', 'make1234')}
+            onPress={() => handleDebugLogin('edson009@gmail.com', 'edsonvaleri009')}
             activeOpacity={0.7}
             disabled={isLoading}
             className="items-center"
@@ -230,7 +230,7 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={() => handleDebugLogin('makenzegomes@gmailcom', 'makenze1234')}
+            onPress={() => handleDebugLogin('lourencocardoso007@gmail.com', 'lorrys1234')}
             activeOpacity={0.7}
             disabled={isLoading}
             className="items-center"
