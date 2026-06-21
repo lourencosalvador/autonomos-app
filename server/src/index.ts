@@ -9,6 +9,8 @@ import { stripeConfirmPaymentRoute } from './routes/stripe-confirm-payment.js';
 import { stripeConnectOnboardRoute } from './routes/stripe-connect-onboard.js';
 import { stripeCreatePaymentIntentRoute } from './routes/stripe-create-payment-intent.js';
 import { stripeWebhookRoute } from './routes/stripe-webhook.js';
+import { escrowReleaseRoute } from './routes/escrow-release.js';
+import { withdrawalRequestRoute } from './routes/withdrawal-request.js';
 import { verifyOTPRoute } from './routes/verify-otp.js';
 
 const app = express();
@@ -40,6 +42,8 @@ app.post('/api/stream/token', streamTokenRoute);
 app.post('/api/stripe/payment-intent', stripeCreatePaymentIntentRoute);
 app.post('/api/stripe/confirm', stripeConfirmPaymentRoute);
 app.post('/api/stripe/connect/onboard', stripeConnectOnboardRoute);
+app.post('/api/escrow/release', escrowReleaseRoute);
+app.post('/api/withdrawals/request', withdrawalRequestRoute);
 
 app.listen(Number(PORT), HOST, () => {
   console.log(`🚀 Servidor rodando em http://${HOST}:${PORT}`);

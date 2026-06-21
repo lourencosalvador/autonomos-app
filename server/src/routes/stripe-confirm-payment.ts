@@ -7,6 +7,13 @@ function badRequest(res: Response, message: string) {
   return res.status(400).json({ ok: false, message });
 }
 
+function metaInt(pi: Stripe.PaymentIntent, key: string): number | null {
+  const v = (pi.metadata as any)?.[key];
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export async function stripeConfirmPaymentRoute(req: Request, res: Response) {
   try {
     if (!isStripeConfigured || !stripe) return res.status(500).json({ ok: false, message: 'Stripe não configurado no servidor.' });
@@ -24,8 +31,10 @@ export async function stripeConfirmPaymentRoute(req: Request, res: Response) {
     }
 
     const status = pi.status;
+    const succeeded = status === 'succeeded';
+    const paidAt = succeeded ? new Date().toISOString() : null;
 
-    // Upsert payment row
+    // Upsert payment row — pagamento bem-sucedido entra RETIDO (escrow held)
     await supabaseAdmin.from('payments').upsert(
       {
         request_id: requestId,
@@ -35,36 +44,39 @@ export async function stripeConfirmPaymentRoute(req: Request, res: Response) {
         currency: pi.currency,
         status,
         stripe_payment_intent_id: pi.id,
-        paid_at: status === 'succeeded' ? new Date().toISOString() : null,
+        paid_at: paidAt,
+        is_urgent: String((pi.metadata as any)?.is_urgent || '') === 'true',
+        escrow_status: 'held',
+        agreed_amount: metaInt(pi, 'agreed_amount'),
+        request_fee: metaInt(pi, 'request_fee'),
+        service_fee: metaInt(pi, 'service_fee'),
+        urgent_bonus: metaInt(pi, 'urgent_bonus'),
+        provider_net: metaInt(pi, 'provider_net'),
+        platform_net: metaInt(pi, 'platform_net'),
       } as any,
       { onConflict: 'stripe_payment_intent_id' }
     );
 
+    // Pedido: pago e RETIDO. O status continua 'accepted' até o cliente liberar (concluir).
     const patch: any = {
       payment_status: status,
-      paid_at: status === 'succeeded' ? new Date().toISOString() : null,
+      paid_at: paidAt,
       stripe_payment_intent_id: pi.id,
     };
-    if (status === 'succeeded') patch.status = 'completed';
+    if (succeeded) patch.escrow_status = 'held';
 
     const { error } = await supabaseAdmin.from('requests').update(patch).eq('id', requestId);
     if (error) {
       // fallback (não quebra)
       await supabaseAdmin
         .from('requests')
-        .update({
-          payment_status: status,
-          paid_at: status === 'succeeded' ? new Date().toISOString() : null,
-          stripe_payment_intent_id: pi.id,
-        } as any)
+        .update({ payment_status: status, paid_at: paidAt, stripe_payment_intent_id: pi.id } as any)
         .eq('id', requestId);
     }
 
-    return res.json({ ok: true, status, livemode: (pi as Stripe.PaymentIntent).livemode });
+    return res.json({ ok: true, status, escrowStatus: succeeded ? 'held' : 'none', livemode: (pi as Stripe.PaymentIntent).livemode });
   } catch (e: any) {
     console.error('[stripe/confirm]', e);
     return res.status(500).json({ ok: false, message: e?.message || 'Erro ao confirmar pagamento.' });
   }
 }
-
-

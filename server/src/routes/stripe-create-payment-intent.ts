@@ -2,23 +2,10 @@ import type { Request, Response } from 'express';
 import type Stripe from 'stripe';
 import { isStripeConfigured, stripe, stripeMode } from '../lib/stripe.js';
 import { isSupabaseAdminConfigured, supabaseAdmin } from '../lib/supabaseAdmin.js';
+import { computeFees } from '../lib/pricing.js';
 
 function badRequest(res: Response, message: string) {
   return res.status(400).json({ ok: false, message });
-}
-
-async function isConnectDestinationReady(accountId: string): Promise<boolean> {
-  if (!stripe) return false;
-  if (!accountId) return false;
-  try {
-    const acct = await stripe.accounts.retrieve(accountId);
-    const caps: any = (acct as any)?.capabilities || {};
-    const transfers = String(caps?.transfers || '').toLowerCase(); // 'active' | 'pending' | 'inactive'
-    // Para destination charges precisamos que transfers esteja ativo (senão a Stripe bloqueia).
-    return transfers === 'active';
-  } catch {
-    return false;
-  }
 }
 
 export async function stripeCreatePaymentIntentRoute(req: Request, res: Response) {
@@ -28,6 +15,7 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
 
     const requestId = String((req.body as any)?.requestId || '').trim();
     const clientId = String((req.body as any)?.clientId || '').trim(); // opcional (ajuda a validar)
+    const isUrgent = (req.body as any)?.isUrgent === true; // urgência marcada pelo cliente no checkout
 
     if (!requestId) return badRequest(res, 'requestId é obrigatório.');
 
@@ -47,29 +35,41 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
       return badRequest(res, 'Pagamento só é permitido quando o pedido estiver ACEITE.');
     }
 
-    const amount = Number((requestRow as any).price_amount ?? 0);
-    let currency = String((requestRow as any).currency || 'usd').trim().toLowerCase();
-    if (!currency) currency = 'usd';
-
-    // Stripe: AOA (Kwanza) pode não ter métodos de pagamento ativos/suportados em algumas contas.
-    // Para não travar o teste, fazemos fallback para USD e guardamos a moeda original no metadata.
-    const originalCurrency = currency;
-    if (currency === 'aoa' || currency === 'kz' || currency === 'kwanza') currency = 'usd';
-
-    if (!Number.isFinite(amount) || amount <= 0) {
+    // Valor ACORDADO definido pelo prestador
+    const agreed = Number((requestRow as any).price_amount ?? 0);
+    if (!Number.isFinite(agreed) || agreed <= 0) {
       return badRequest(res, 'O prestador ainda não definiu o preço.');
     }
 
-    // Se já existir um PaymentIntent para este pedido, reutilizamos quando for seguro.
+    let currency = String((requestRow as any).currency || 'usd').trim().toLowerCase();
+    if (!currency) currency = 'usd';
+    // Stripe: AOA (Kwanza) pode não ter métodos ativos. Fallback para USD para não travar o teste.
+    const originalCurrency = currency;
+    if (currency === 'aoa' || currency === 'kz' || currency === 'kwanza') currency = 'usd';
+
+    // Taxas: o CLIENTE paga o total (acordado + taxa de solicitação). Urgente dobra a taxa.
+    const fees = computeFees(agreed, isUrgent);
+    const amount = fees.clientTotal;
+
+    const feeMetadata = {
+      agreed_amount: String(fees.agreed),
+      client_total: String(fees.clientTotal),
+      request_fee: String(fees.requestFee),
+      service_fee: String(fees.serviceFee),
+      urgent_bonus: String(fees.urgentBonus),
+      provider_net: String(fees.providerNet),
+      platform_net: String(fees.platformNet),
+      is_urgent: String(isUrgent),
+    };
+
+    // Reutiliza um PaymentIntent existente quando seguro (mesmo valor/moeda e ainda aberto).
     const existingIntentId = String((requestRow as any).stripe_payment_intent_id || '').trim();
     if (existingIntentId) {
       try {
         const pi = await stripe.paymentIntents.retrieve(existingIntentId);
         const shouldReuse =
-          // Não reutiliza se o PI já terminou
           pi.status !== 'succeeded' &&
           pi.status !== 'canceled' &&
-          // Não reutiliza se mudou valor/moeda
           pi.amount === amount &&
           pi.currency === currency;
 
@@ -80,12 +80,10 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
             paymentIntentId: pi.id,
             stripeMode,
             livemode: pi.livemode,
+            fees,
           });
         }
-        // Caso contrário, criaremos um novo PI abaixo e sobrescreveremos no Supabase.
       } catch (e: any) {
-        // Se trocarmos de chaves (LIVE -> TEST) ou o PI tiver sido apagado, a Stripe retorna resource_missing.
-        // Nesse caso, criamos um novo PI e sobrescrevemos no Supabase.
         const msg = String(e?.message || '');
         const code = String(e?.code || '');
         if (code === 'resource_missing' || msg.includes('No such payment_intent')) {
@@ -96,97 +94,49 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
       }
     }
 
-    // Connect (opcional): se o prestador tiver conta conectada, podemos direcionar o pagamento.
     const providerId = String((requestRow as any).provider_id);
-    const { data: providerProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('stripe_account_id')
-      .eq('id', providerId)
-      .maybeSingle();
 
-    const destination = String((providerProfile as any)?.stripe_account_id || '').trim();
-
-    const baseParams: Stripe.PaymentIntentCreateParams = {
+    // ESCROW: o dinheiro é capturado para a conta da PLATAFORMA e fica retido no nosso ledger.
+    // O repasse ao prestador acontece no saque (FlexPay), depois do cliente liberar o serviço.
+    // Por isso NÃO usamos destination charge aqui.
+    const pi = await stripe.paymentIntents.create({
       amount,
       currency,
-      // Evita o erro "No valid payment method types..." quando o Dashboard não tem métodos
-      // automáticos ativados/compatíveis. Para o nosso app, cartão resolve o teste.
       payment_method_types: ['card'],
       metadata: {
         request_id: requestId,
         client_id: String((requestRow as any).client_id),
         provider_id: providerId,
         original_currency: originalCurrency,
+        ...feeMetadata,
       },
-    };
+    });
 
-    // Connect (destination charge) é opcional e pode falhar se o prestador ainda não ativou recebimentos
-    // (capability transfers / feature stripe_transfers). Para não travar o pagamento do cliente,
-    // fazemos fallback automático para pagamento na conta da plataforma e registramos no "wallet" interno.
-    let pi: Stripe.PaymentIntent;
-    let connectAttempted = false;
-    let connectUsed = false;
-    let connectReason: string | undefined;
-
-    // Só tenta Connect se a conta conectada estiver realmente pronta para transfers.
-    const destinationReady = destination ? await isConnectDestinationReady(destination) : false;
-
-    if (destination && destinationReady) {
-      connectAttempted = true;
-      try {
-        pi = await stripe.paymentIntents.create({
-          ...baseParams,
-          transfer_data: { destination },
-          // Fee do app (exemplo): 10%. Ajuste depois.
-          application_fee_amount: Math.max(1, Math.round(amount * 0.1)),
-        });
-        connectUsed = true;
-      } catch (e: any) {
-        const msg = String(e?.message || '');
-        const code = String(e?.code || '');
-        // Erros comuns quando a conta conectada ainda não está apta a receber transfers
-        const needsTransfers =
-          msg.includes('stripe_balance.stripe_transfers') ||
-          msg.toLowerCase().includes('destination account') ||
-          (msg.toLowerCase().includes('transfers') && msg.toLowerCase().includes('enabled')) ||
-          code === 'account_invalid';
-
-        if (!needsTransfers) throw e;
-
-        connectReason = 'destination_not_eligible_for_transfers';
-        // Fallback: cria PaymentIntent SEM destination (plataforma recebe; wallet interno reflete o valor)
-        pi = await stripe.paymentIntents.create({
-          ...baseParams,
-          metadata: {
-            ...(baseParams.metadata || {}),
-            connect_destination: destination,
-            connect_fallback: 'true',
-            connect_reason: connectReason,
-          },
-        });
-      }
-    } else if (destination && !destinationReady) {
-      // Prestador iniciou onboarding mas ainda não está pronto: não bloqueia o pagamento do cliente.
-      connectAttempted = true;
-      connectUsed = false;
-      connectReason = 'connect_onboarding_incomplete';
-      pi = await stripe.paymentIntents.create({
-        ...baseParams,
-        metadata: {
-          ...(baseParams.metadata || {}),
-          connect_destination: destination,
-          connect_fallback: 'true',
-          connect_reason: connectReason,
-        },
-      });
-    } else {
-      pi = await stripe.paymentIntents.create(baseParams);
+    // Persiste o PI + snapshot das taxas no pedido (escrow ainda não retido até pagar).
+    // Resiliente: se as colunas novas (migração) ainda não existirem, grava só o essencial.
+    const reqFull = await supabaseAdmin
+      .from('requests')
+      .update({
+        stripe_payment_intent_id: pi.id,
+        payment_status: pi.status,
+        is_urgent: isUrgent,
+        agreed_amount: fees.agreed,
+        client_total: fees.clientTotal,
+        request_fee: fees.requestFee,
+        service_fee: fees.serviceFee,
+        urgent_bonus: fees.urgentBonus,
+        provider_net: fees.providerNet,
+        platform_net: fees.platformNet,
+      } as any)
+      .eq('id', requestId);
+    if (reqFull.error) {
+      await supabaseAdmin
+        .from('requests')
+        .update({ stripe_payment_intent_id: pi.id, payment_status: pi.status } as any)
+        .eq('id', requestId);
     }
 
-    // Persistimos o PI no pedido e criamos (ou atualizamos) o registro de pagamento
-    await supabaseAdmin.from('requests').update({ stripe_payment_intent_id: pi.id, payment_status: pi.status }).eq('id', requestId);
-
-    await supabaseAdmin.from('payments').upsert(
+    const payFull = await supabaseAdmin.from('payments').upsert(
       {
         request_id: requestId,
         client_id: String((requestRow as any).client_id),
@@ -195,9 +145,31 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
         currency,
         status: pi.status,
         stripe_payment_intent_id: pi.id,
+        is_urgent: isUrgent,
+        escrow_status: 'held',
+        agreed_amount: fees.agreed,
+        request_fee: fees.requestFee,
+        service_fee: fees.serviceFee,
+        urgent_bonus: fees.urgentBonus,
+        provider_net: fees.providerNet,
+        platform_net: fees.platformNet,
       } as any,
       { onConflict: 'stripe_payment_intent_id' }
     );
+    if (payFull.error) {
+      await supabaseAdmin.from('payments').upsert(
+        {
+          request_id: requestId,
+          client_id: String((requestRow as any).client_id),
+          provider_id: providerId,
+          amount,
+          currency,
+          status: pi.status,
+          stripe_payment_intent_id: pi.id,
+        } as any,
+        { onConflict: 'stripe_payment_intent_id' }
+      );
+    }
 
     return res.json({
       ok: true,
@@ -205,25 +177,16 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
       paymentIntentId: pi.id,
       stripeMode,
       livemode: pi.livemode,
-      connect: destination
-        ? {
-            attempted: connectAttempted,
-            used: connectUsed,
-            destination,
-            reason: connectUsed ? undefined : connectReason,
-          }
-        : { attempted: false, used: false },
+      fees,
     });
   } catch (e: any) {
     console.error('[stripe/payment-intent]', e);
-    // Supabase: chave inválida costuma vir com hint
     if (e?.message === 'Invalid API key') {
       return res.status(500).json({
         ok: false,
         message: 'SUPABASE_SERVICE_ROLE_KEY inválida no servidor. Verifique a service role key no Supabase Dashboard.',
       });
     }
-    // Stripe: moeda sem métodos válidos
     if (String(e?.message || '').includes('No valid payment method types')) {
       return res.status(400).json({
         ok: false,
@@ -234,5 +197,3 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
     return res.status(500).json({ ok: false, message: e?.message || 'Erro ao criar PaymentIntent.' });
   }
 }
-
-

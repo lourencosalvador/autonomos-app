@@ -26,8 +26,17 @@ export async function stripeWebhookRoute(req: Request, res: Response) {
       const pi = event.data.object as Stripe.PaymentIntent;
       const requestId = String((pi.metadata as any)?.request_id || '').trim();
       const status = pi.status;
+      const succeeded = status === 'succeeded';
+      const paidAt = succeeded ? new Date().toISOString() : null;
 
-      // Upsert payment row (se a tabela existir)
+      const metaInt = (key: string): number | null => {
+        const v = (pi.metadata as any)?.[key];
+        if (v === undefined || v === null || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      // Upsert payment row — pagamento bem-sucedido entra RETIDO (escrow held)
       try {
         await supabaseAdmin.from('payments').upsert(
           {
@@ -38,7 +47,15 @@ export async function stripeWebhookRoute(req: Request, res: Response) {
             currency: pi.currency,
             status,
             stripe_payment_intent_id: pi.id,
-            paid_at: status === 'succeeded' ? new Date().toISOString() : null,
+            paid_at: paidAt,
+            is_urgent: String((pi.metadata as any)?.is_urgent || '') === 'true',
+            escrow_status: 'held',
+            agreed_amount: metaInt('agreed_amount'),
+            request_fee: metaInt('request_fee'),
+            service_fee: metaInt('service_fee'),
+            urgent_bonus: metaInt('urgent_bonus'),
+            provider_net: metaInt('provider_net'),
+            platform_net: metaInt('platform_net'),
           } as any,
           { onConflict: 'stripe_payment_intent_id' }
         );
@@ -46,30 +63,24 @@ export async function stripeWebhookRoute(req: Request, res: Response) {
         console.error('[stripe/webhook] payments_upsert_failed', e?.message || e);
       }
 
-      // Atualiza o pedido (se tiver request_id)
+      // Atualiza o pedido (se tiver request_id). Pago => RETIDO (escrow held), NÃO concluído.
+      // A conclusão acontece quando o cliente libera o serviço.
       if (requestId) {
         const patch: any = {
           payment_status: status,
-          paid_at: status === 'succeeded' ? new Date().toISOString() : null,
+          paid_at: paidAt,
           stripe_payment_intent_id: pi.id,
         };
-
-        // Regra do app: pagou => serviço concluído
-        if (status === 'succeeded') patch.status = 'completed';
+        if (succeeded) patch.escrow_status = 'held';
 
         const { error } = await supabaseAdmin.from('requests').update(patch).eq('id', requestId);
 
-        // Se a coluna/constraint ainda não suportar 'completed', não derruba o webhook — mantém pelo menos payment_status.
         if (error) {
           console.error('[stripe/webhook] request_update_failed', error?.message || error);
-          if (status === 'succeeded') {
+          if (succeeded) {
             await supabaseAdmin
               .from('requests')
-              .update({
-                payment_status: status,
-                paid_at: new Date().toISOString(),
-                stripe_payment_intent_id: pi.id,
-              } as any)
+              .update({ payment_status: status, paid_at: paidAt, stripe_payment_intent_id: pi.id } as any)
               .eq('id', requestId);
           }
         }
