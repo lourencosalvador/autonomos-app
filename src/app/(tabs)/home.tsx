@@ -15,7 +15,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { categories } from '../../data/categories';
 import { services } from '../../data/services';
 import { isSupabaseConfigured, supabase, type PaymentRow, type WithdrawalRow } from '../../lib/supabase';
-import { computeWalletBalance } from '../../lib/walletBalance';
+import { computeWalletBalance, requestRowToPayment } from '../../lib/walletBalance';
 import { getRandomPhotos } from '../../services/unsplashService';
 import { useAuthStore } from '../../stores/authStore';
 import { useRequestsStore } from '../../stores/requestsStore';
@@ -221,41 +221,22 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
     async function run() {
       try {
         if (!user?.id || !isSupabaseConfigured) return;
-        // 1) Tenta pela tabela payments (carteira real) — saldo DISPONÍVEL (liberado − sacado)
-        const { data: pays, error } = await supabase
-          .from('payments')
-          .select('*')
-          .eq('provider_id', user.id);
+        // Saldo DISPONÍVEL a partir de `requests` (fonte confiável) + withdrawals.
+        const { data: reqs } = await supabase
+          .from('requests')
+          .select('id, price_amount, currency, paid_at, payment_status, escrow_status, provider_net, is_urgent, client_total, status, created_at')
+          .eq('provider_id', user.id)
+          .eq('payment_status', 'succeeded');
         const { data: withs } = await supabase
           .from('withdrawals')
           .select('*')
           .eq('provider_id', user.id);
 
-        if (!error && pays && Array.isArray(pays) && pays.length) {
-          const bal = computeWalletBalance(pays as PaymentRow[], (withs || []) as WithdrawalRow[]);
-          if (mounted) {
-            setWalletBalance(bal.available);
-            setWalletCurrency(bal.currency);
-          }
-          return;
-        }
-
-        // 2) Fallback: deriva de requests (liberados = status completed)
-        const { data: reqs } = await supabase
-          .from('requests')
-          .select('price_amount,currency,payment_status,escrow_status,provider_net,status')
-          .eq('provider_id', user.id)
-          .eq('payment_status', 'succeeded');
-        const released = (reqs || []).filter(
-          (r: any) => r.escrow_status === 'released' || r.status === 'completed'
-        );
-        const sum = released.reduce(
-          (acc: number, r: any) => acc + Number(r.provider_net ?? r.price_amount ?? 0),
-          0
-        );
+        const mapped = ((reqs || []) as any[]).map(requestRowToPayment);
+        const bal = computeWalletBalance(mapped as PaymentRow[], (withs || []) as WithdrawalRow[]);
         if (mounted) {
-          setWalletBalance(sum);
-          setWalletCurrency(String((released?.[0] as any)?.currency || 'USD').toUpperCase());
+          setWalletBalance(bal.available);
+          setWalletCurrency(bal.currency);
         }
       } catch {
         // silêncio

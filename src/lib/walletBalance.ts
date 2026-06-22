@@ -1,4 +1,33 @@
 import type { PaymentRow, WithdrawalRow } from './supabase';
+import { computeFees } from './pricing';
+
+/**
+ * Converte uma linha de `requests` (paga) numa estrutura de pagamento para a carteira.
+ * `requests` é a fonte CONFIÁVEL (escrita direto pelo app); a tabela `payments` depende
+ * do backend (confirm/webhook) e nem sempre é populada.
+ */
+export function requestRowToPayment(r: any): PaymentRow {
+  const agreed = Number(r.price_amount || 0);
+  const isUrgent = !!r.is_urgent;
+  const net = r.provider_net != null ? Number(r.provider_net) : computeFees(agreed, isUrgent).providerNet;
+  const escrow: 'held' | 'released' =
+    r.escrow_status === 'released' || r.status === 'completed' ? 'released' : 'held';
+  return {
+    id: String(r.id),
+    request_id: String(r.id),
+    client_id: null,
+    provider_id: r.provider_id ?? null,
+    amount: Number(r.client_total ?? agreed),
+    currency: String(r.currency || 'usd'),
+    status: 'succeeded',
+    stripe_payment_intent_id: String(r.id),
+    paid_at: r.paid_at ?? null,
+    escrow_status: escrow,
+    provider_net: net,
+    created_at: r.created_at,
+    updated_at: r.created_at,
+  } as PaymentRow;
+}
 
 export type WalletBalance = {
   /** Retido em escrow (pago mas não liberado) — visível, não sacável. */

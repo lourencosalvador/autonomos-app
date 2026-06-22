@@ -12,7 +12,7 @@ import { WithdrawSheet } from '../components/WithdrawSheet';
 import { useAuthStore } from '../stores/authStore';
 import { isSupabaseConfigured, supabase, type PaymentRow, type WithdrawalRow } from '../lib/supabase';
 import { createStripeConnectOnboarding, getBackendHealth, requestWithdrawal } from '../services/apiService';
-import { computeWalletBalance, paymentEscrow, paymentProviderNet } from '../lib/walletBalance';
+import { computeWalletBalance, paymentEscrow, paymentProviderNet, requestRowToPayment } from '../lib/walletBalance';
 import { formatMoney } from '../lib/pricing';
 import { toast } from '../lib/sonner';
 
@@ -50,12 +50,10 @@ export default function CarteiraScreen() {
   const [loading, setLoading] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
-  const [paymentsTableMissing, setPaymentsTableMissing] = useState(false);
-  const [fallbackPayments, setFallbackPayments] = useState<PaymentRow[]>([]);
 
   const iban = 'AO06 0040 0000 1234 5678 9012 3';
 
-  const effectivePayments = payments.length ? payments : fallbackPayments;
+  const effectivePayments = payments;
   const balance = useMemo(() => computeWalletBalance(effectivePayments, withdrawals), [effectivePayments, withdrawals]);
   const currency = balance.currency;
 
@@ -102,16 +100,17 @@ export default function CarteiraScreen() {
     if (user.role !== 'professional') return;
     try {
       setLoading(true);
-      setPaymentsTableMissing(false);
-      setFallbackPayments([]);
 
-      const { data, error } = await supabase
-        .from('payments')
-        .select('*')
+      // Fonte CONFIÁVEL: a tabela `requests` (escrita direto pelo app). A `payments` depende
+      // do backend (confirm/webhook) e nem sempre é populada, então não dependemos dela aqui.
+      const { data: reqs, error } = await supabase
+        .from('requests')
+        .select('id, client_name, price_amount, currency, paid_at, payment_status, escrow_status, provider_net, is_urgent, client_total, status, created_at')
         .eq('provider_id', user.id)
-        .order('created_at', { ascending: false });
+        .eq('payment_status', 'succeeded')
+        .order('paid_at', { ascending: false });
       if (error) throw error;
-      setPayments(((data || []) as any) as PaymentRow[]);
+      setPayments(((reqs || []) as any[]).map(requestRowToPayment));
 
       // Saques
       const { data: withs } = await supabase
@@ -120,53 +119,10 @@ export default function CarteiraScreen() {
         .eq('provider_id', user.id)
         .order('created_at', { ascending: false });
       setWithdrawals(((withs || []) as any) as WithdrawalRow[]);
-
-      // Fallback: deriva de requests se não houver linhas em payments
-      if (!data || (Array.isArray(data) && data.length === 0)) {
-        await loadFallbackFromRequests();
-      }
     } catch (e: any) {
-      const msg = String(e?.message || '');
-      if (msg.includes("Could not find the table 'public.payments'")) {
-        setPaymentsTableMissing(true);
-        toast.error('Falta criar a tabela payments no Supabase (veja SUPABASE_SETUP.md).');
-        await loadFallbackFromRequests();
-        return;
-      }
-      toast.error(msg || 'Não foi possível carregar a carteira.');
+      toast.error(String(e?.message || '') || 'Não foi possível carregar a carteira.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const loadFallbackFromRequests = async () => {
-    if (!user) return;
-    try {
-      const { data: reqs, error } = await supabase
-        .from('requests')
-        .select('id, client_name, price_amount, currency, paid_at, payment_status, escrow_status, provider_net, status, created_at')
-        .eq('provider_id', user.id)
-        .eq('payment_status', 'succeeded')
-        .order('paid_at', { ascending: false });
-      if (error || !reqs) return;
-      const mapped: PaymentRow[] = (reqs as any[]).map((r) => ({
-        id: String(r.id),
-        request_id: String(r.id),
-        client_id: null,
-        provider_id: user.id,
-        amount: Number(r.price_amount || 0),
-        currency: String(r.currency || 'usd'),
-        status: 'succeeded',
-        stripe_payment_intent_id: String(r.id),
-        paid_at: r.paid_at || null,
-        escrow_status: r.escrow_status || (r.status === 'completed' ? 'released' : 'held'),
-        provider_net: r.provider_net ?? null,
-        created_at: r.created_at,
-        updated_at: r.created_at,
-      }));
-      setFallbackPayments(mapped);
-    } catch {
-      // silencioso
     }
   };
 
@@ -342,14 +298,12 @@ export default function CarteiraScreen() {
             icon="card-outline"
             title="Sem movimentos"
             description={
-              paymentsTableMissing
-                ? 'Para o histórico funcionar, crie as tabelas no Supabase (SQL em SUPABASE_SETUP.md / supabase_escrow_migration.sql).'
-                : filter === 'all'
-                  ? 'Quando houver movimentações, elas aparecem aqui.'
-                  : 'Não há movimentos para este filtro.'
+              filter === 'all'
+                ? 'Quando houver movimentações, elas aparecem aqui.'
+                : 'Não há movimentos para este filtro.'
             }
-            actionLabel={paymentsTableMissing ? 'Tentar novamente' : filter !== 'all' ? 'Ver todos' : undefined}
-            onAction={paymentsTableMissing ? loadWallet : filter !== 'all' ? () => setFilter('all') : undefined}
+            actionLabel={filter !== 'all' ? 'Ver todos' : undefined}
+            onAction={filter !== 'all' ? () => setFilter('all') : undefined}
           />
         }
         renderItem={({ item }) => {

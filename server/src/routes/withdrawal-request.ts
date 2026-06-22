@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { isSupabaseAdminConfigured, supabaseAdmin } from '../lib/supabaseAdmin.js';
+import { computeFees } from '../lib/pricing.js';
 
 function badRequest(res: Response, message: string) {
   return res.status(400).json({ ok: false, message });
@@ -22,20 +23,28 @@ export async function withdrawalRequestRoute(req: Request, res: Response) {
     const requestedAmount = Number((req.body as any)?.amount ?? 0); // minor units; 0/ausente = sacar tudo
     if (!providerId) return badRequest(res, 'providerId é obrigatório.');
 
-    // Pagamentos liberados (sacáveis)
-    const { data: pays, error: payErr } = await supabaseAdmin
-      .from('payments')
-      .select('amount, provider_net, currency, status, escrow_status')
+    // Fonte CONFIÁVEL: requests pagas e liberadas (escrow released). A tabela `payments`
+    // depende do confirm/webhook e nem sempre é populada, então calculamos a partir de requests.
+    const { data: reqs, error: reqErr } = await supabaseAdmin
+      .from('requests')
+      .select('price_amount, currency, payment_status, escrow_status, provider_net, is_urgent, status')
       .eq('provider_id', providerId)
-      .eq('status', 'succeeded');
-    if (payErr) throw payErr;
+      .eq('payment_status', 'succeeded');
+    if (reqErr) throw reqErr;
 
-    const released = (pays || []).filter((p: any) => p.escrow_status === 'released');
-    const releasedTotal = released.reduce(
-      (sum: number, p: any) => sum + Number(p.provider_net ?? p.amount ?? 0),
-      0
+    const released = (reqs || []).filter(
+      (r: any) => r.escrow_status === 'released' || r.status === 'completed'
     );
-    const currency = String((released.find((p: any) => p.currency)?.currency || pays?.find((p: any) => p.currency)?.currency || 'usd')).toLowerCase();
+    const releasedTotal = released.reduce((sum: number, r: any) => {
+      const net =
+        r.provider_net != null
+          ? Number(r.provider_net)
+          : computeFees(Number(r.price_amount || 0), !!r.is_urgent).providerNet;
+      return sum + net;
+    }, 0);
+    const currency = String(
+      released.find((r: any) => r.currency)?.currency || reqs?.find((r: any) => r.currency)?.currency || 'usd'
+    ).toLowerCase();
 
     // Saques já existentes (não falhados) descontam do disponível
     const { data: withs, error: wErr } = await supabaseAdmin
