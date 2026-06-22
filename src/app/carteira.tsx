@@ -3,36 +3,34 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
+import { ArrowDownLeft, ArrowUpRight, Clock, Lock } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { FlatList, Image, Text, TouchableOpacity, View } from 'react-native';
 import UnionArt from '../../assets/images/Union.svg';
 import { EmptyState } from '../components/EmptyState';
+import { WithdrawSheet } from '../components/WithdrawSheet';
 import { useAuthStore } from '../stores/authStore';
-import { isSupabaseConfigured, supabase, type PaymentRow } from '../lib/supabase';
-import { createStripeConnectOnboarding } from '../services/apiService';
+import { isSupabaseConfigured, supabase, type PaymentRow, type WithdrawalRow } from '../lib/supabase';
+import { createStripeConnectOnboarding, getBackendHealth, requestWithdrawal } from '../services/apiService';
+import { computeWalletBalance, paymentEscrow, paymentProviderNet } from '../lib/walletBalance';
+import { formatMoney } from '../lib/pricing';
 import { toast } from '../lib/sonner';
 
-type MovementType = 'payment' | 'withdrawal';
-type Filter = 'all' | MovementType;
+type Filter = 'all' | 'payment' | 'withdrawal';
 
 type Movement = {
   id: string;
   name: string;
   subtitle: string;
   date: string;
-  amount: number;
-  type: MovementType;
-  avatar?: any;
+  amount: number; // assinado: + entrada, - saída
+  type: 'payment' | 'withdrawal';
+  escrow?: 'held' | 'released' | 'refunded';
+  status?: string;
+  ts: number;
 };
 
 const ProfileImage = require('../../assets/images/Profile.jpg');
-
-function formatKz(amount: number) {
-  const sign = amount >= 0 ? '+' : '-';
-  const abs = Math.abs(amount);
-  const formatted = abs.toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `${sign}${formatted}`;
-}
 
 function maskIban(iban: string) {
   const clean = iban.replace(/\s+/g, '');
@@ -48,47 +46,65 @@ export default function CarteiraScreen() {
   const [showIban, setShowIban] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
   const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [withdrawals, setWithdrawals] = useState<WithdrawalRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [withdrawing, setWithdrawing] = useState(false);
   const [paymentsTableMissing, setPaymentsTableMissing] = useState(false);
-  const [fallbackMovements, setFallbackMovements] = useState<Movement[]>([]);
+  const [fallbackPayments, setFallbackPayments] = useState<PaymentRow[]>([]);
 
   const iban = 'AO06 0040 0000 1234 5678 9012 3';
 
+  const effectivePayments = payments.length ? payments : fallbackPayments;
+  const balance = useMemo(() => computeWalletBalance(effectivePayments, withdrawals), [effectivePayments, withdrawals]);
+  const currency = balance.currency;
+
   const movements = useMemo<Movement[]>(() => {
-    const mapped = (payments || [])
+    const pays: Movement[] = (effectivePayments || [])
       .filter((p) => p.status === 'succeeded')
       .map((p) => {
-        const date = new Date(p.paid_at || p.created_at);
-        const dateStr = date.toLocaleString('pt-PT');
+        const ts = new Date(p.paid_at || p.created_at).getTime();
+        const esc = paymentEscrow(p);
         return {
-          id: p.id,
-          name: 'Pagamento',
-          subtitle: 'Pagamento Recebido',
-          date: dateStr,
-          amount: p.amount,
+          id: `p_${p.id}`,
+          name: 'Pagamento recebido',
+          subtitle: esc === 'held' ? 'Retido (em processamento)' : 'Liberado (realizado)',
+          date: new Date(ts).toLocaleString('pt-PT'),
+          amount: paymentProviderNet(p),
           type: 'payment' as const,
+          escrow: esc,
+          ts,
         };
       });
-    return mapped.length ? mapped : fallbackMovements;
-  }, [fallbackMovements, payments]);
 
-  const balance = useMemo(() => {
-    return movements.reduce((sum, m) => sum + m.amount, 0);
-  }, [movements]);
+    const withs: Movement[] = (withdrawals || []).map((w) => {
+      const ts = new Date(w.requested_at || w.created_at).getTime();
+      const statusLabel =
+        w.status === 'processing' ? 'Em processamento (24h–48h)' : w.status === 'paid' ? 'Concluído' : w.status === 'failed' ? 'Falhou' : 'Cancelado';
+      return {
+        id: `w_${w.id}`,
+        name: 'Saque FlexPay',
+        subtitle: statusLabel,
+        date: new Date(ts).toLocaleString('pt-PT'),
+        amount: -Number(w.amount || 0),
+        type: 'withdrawal' as const,
+        status: w.status,
+        ts,
+      };
+    });
 
-  const currency = useMemo(() => {
-    const c = payments?.find((p) => p.currency)?.currency || 'USD';
-    return c.toUpperCase();
-  }, [payments]);
+    return [...pays, ...withs].sort((a, b) => b.ts - a.ts);
+  }, [effectivePayments, withdrawals]);
 
-  const loadPayments = async () => {
+  const loadWallet = async () => {
     if (!user) return;
     if (!isSupabaseConfigured) return;
     if (user.role !== 'professional') return;
     try {
       setLoading(true);
       setPaymentsTableMissing(false);
-      setFallbackMovements([]);
+      setFallbackPayments([]);
+
       const { data, error } = await supabase
         .from('payments')
         .select('*')
@@ -97,60 +113,24 @@ export default function CarteiraScreen() {
       if (error) throw error;
       setPayments(((data || []) as any) as PaymentRow[]);
 
-      // Fallback: se não houver pagamentos ainda, tenta derivar do requests.payment_status (serve para debug)
+      // Saques
+      const { data: withs } = await supabase
+        .from('withdrawals')
+        .select('*')
+        .eq('provider_id', user.id)
+        .order('created_at', { ascending: false });
+      setWithdrawals(((withs || []) as any) as WithdrawalRow[]);
+
+      // Fallback: deriva de requests se não houver linhas em payments
       if (!data || (Array.isArray(data) && data.length === 0)) {
-        const { data: reqs, error: reqErr } = await supabase
-          .from('requests')
-          .select('id, client_name, price_amount, currency, paid_at, payment_status, created_at')
-          .eq('provider_id', user.id)
-          .eq('payment_status', 'succeeded')
-          .order('paid_at', { ascending: false });
-        if (!reqErr && reqs && Array.isArray(reqs)) {
-          const mapped: Movement[] = reqs.map((r: any) => {
-            const date = new Date(r.paid_at || r.created_at);
-            return {
-              id: String(r.id),
-              name: String(r.client_name || 'Cliente'),
-              subtitle: 'Pagamento Recebido',
-              date: date.toLocaleString('pt-PT'),
-              amount: Number(r.price_amount || 0),
-              type: 'payment',
-              avatar: ProfileImage,
-            };
-          });
-          setFallbackMovements(mapped);
-        }
+        await loadFallbackFromRequests();
       }
     } catch (e: any) {
       const msg = String(e?.message || '');
       if (msg.includes("Could not find the table 'public.payments'")) {
         setPaymentsTableMissing(true);
-        // Evita spam de toast em cada refresh
-        toast.error('Falta criar a tabela payments no Supabase (veja o SQL no SUPABASE_SETUP.md).');
-        // Mesmo sem a tabela payments, tentamos mostrar algo via requests.payment_status
-        try {
-          const { data: reqs, error: reqErr } = await supabase
-            .from('requests')
-            .select('id, client_name, price_amount, currency, paid_at, payment_status, created_at')
-            .eq('provider_id', user.id)
-            .eq('payment_status', 'succeeded')
-            .order('paid_at', { ascending: false });
-          if (!reqErr && reqs && Array.isArray(reqs)) {
-            const mapped: Movement[] = reqs.map((r: any) => {
-              const date = new Date(r.paid_at || r.created_at);
-              return {
-                id: String(r.id),
-                name: String(r.client_name || 'Cliente'),
-                subtitle: 'Pagamento Recebido',
-                date: date.toLocaleString('pt-PT'),
-                amount: Number(r.price_amount || 0),
-                type: 'payment',
-                avatar: ProfileImage,
-              };
-            });
-            setFallbackMovements(mapped);
-          }
-        } catch {}
+        toast.error('Falta criar a tabela payments no Supabase (veja SUPABASE_SETUP.md).');
+        await loadFallbackFromRequests();
         return;
       }
       toast.error(msg || 'Não foi possível carregar a carteira.');
@@ -159,8 +139,41 @@ export default function CarteiraScreen() {
     }
   };
 
+  const loadFallbackFromRequests = async () => {
+    if (!user) return;
+    try {
+      const { data: reqs, error } = await supabase
+        .from('requests')
+        .select('id, client_name, price_amount, currency, paid_at, payment_status, escrow_status, provider_net, status, created_at')
+        .eq('provider_id', user.id)
+        .eq('payment_status', 'succeeded')
+        .order('paid_at', { ascending: false });
+      if (error || !reqs) return;
+      const mapped: PaymentRow[] = (reqs as any[]).map((r) => ({
+        id: String(r.id),
+        request_id: String(r.id),
+        client_id: null,
+        provider_id: user.id,
+        amount: Number(r.price_amount || 0),
+        currency: String(r.currency || 'usd'),
+        status: 'succeeded',
+        stripe_payment_intent_id: String(r.id),
+        paid_at: r.paid_at || null,
+        escrow_status: r.escrow_status || (r.status === 'completed' ? 'released' : 'held'),
+        provider_net: r.provider_net ?? null,
+        created_at: r.created_at,
+        updated_at: r.created_at,
+      }));
+      setFallbackPayments(mapped);
+    } catch {
+      // silencioso
+    }
+  };
+
   useEffect(() => {
-    loadPayments();
+    loadWallet();
+    // Acorda o backend (Render free dorme) pra que o saque não estoure por cold start.
+    getBackendHealth().catch(() => {});
   }, [user?.id]);
 
   const filtered = useMemo(() => {
@@ -178,6 +191,22 @@ export default function CarteiraScreen() {
       toast.success('Finalize no Stripe e volte para o app.');
     } catch (e: any) {
       toast.error(e?.message || 'Não foi possível abrir a ativação.');
+    }
+  };
+
+  const handleWithdraw = async ({ amount }: { amount: number }) => {
+    if (!user) return;
+    setWithdrawing(true);
+    try {
+      toast.loading('Solicitando saque...');
+      const resp = await requestWithdrawal({ providerId: user.id, amount });
+      setWithdrawOpen(false);
+      toast.success('Saque solicitado! O valor chega em 24h a 48h.');
+      await loadWallet();
+    } catch (e: any) {
+      toast.error(e?.message || 'Não foi possível solicitar o saque.');
+    } finally {
+      setWithdrawing(false);
     }
   };
 
@@ -212,54 +241,70 @@ export default function CarteiraScreen() {
 
       <View className="px-6">
         <View className="rounded-3xl overflow-hidden">
-          <LinearGradient
-            colors={['#034660', '#00E7FF']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={{ padding: 18, borderRadius: 24 }}
-          >
+          <LinearGradient colors={['#034660', '#00E7FF']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ padding: 18, borderRadius: 24 }}>
             <View className="flex-row items-start justify-between">
               <View className="flex-1">
                 <View className="flex-row items-center gap-2">
-                  <Text className="text-white/90 text-[13px] font-bold">Saldo Total</Text>
-                  <MaterialCommunityIcons name="bank" size={16} color="rgba(255,255,255,0.9)" />
+                  <Text className="text-white/90 text-[13px] font-bold">Saldo disponível</Text>
+                  <MaterialCommunityIcons name="flash" size={16} color="rgba(255,255,255,0.9)" />
                 </View>
-                <Text className="mt-6 text-white text-[26px] font-extrabold">
-                  {currency} {(balance / 100).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <Text className="mt-3 text-white text-[28px] font-extrabold">
+                  {currency} {(balance.available / 100).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </Text>
 
                 <View className="mt-3 flex-row items-center justify-between">
-                  <Text className="text-white/85 text-[12px] tracking-widest">
-                    {showIban ? iban : maskIban(iban)}
-                  </Text>
-                  <TouchableOpacity onPress={() => setShowIban((v) => !v)} activeOpacity={0.85} className="h-10 w-10 items-center justify-center rounded-full bg-white/15">
+                  <Text className="text-white/85 text-[12px] tracking-widest">{showIban ? iban : maskIban(iban)}</Text>
+                  <TouchableOpacity onPress={() => setShowIban((v) => !v)} activeOpacity={0.85} className="h-9 w-9 items-center justify-center rounded-full bg-white/15">
                     <Ionicons name={showIban ? 'eye-off-outline' : 'eye-outline'} size={18} color="white" />
                   </TouchableOpacity>
                 </View>
               </View>
 
               <View className="items-end z-10">
-                <Image
-                  source={require('../../assets/images/logo-ligth.png')}
-                  style={{ width: 90, height: 22, opacity: 0.9 }}
-                  resizeMode="contain"
-                />
+                <Image source={require('../../assets/images/logo-ligth.png')} style={{ width: 90, height: 22, opacity: 0.9 }} resizeMode="contain" />
               </View>
             </View>
 
-            <View className="mt-6 flex-row items-center gap-3">
-              <TouchableOpacity activeOpacity={0.85} onPress={handleOnboardStripe} className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2">
-                <Text className="text-white text-[12px] font-bold mr-2">Ativar recebimentos</Text>
+            {/* Sub-saldos: retido + em saque */}
+            <View className="mt-4 flex-row gap-2">
+              <View className="flex-1 flex-row items-center gap-2 rounded-2xl bg-white/15 px-3 py-2">
+                <Lock size={14} color="#fff" strokeWidth={2.4} />
+                <View>
+                  <Text className="text-white/75 text-[10px] font-bold">Retido</Text>
+                  <Text className="text-white text-[12px] font-extrabold">
+                    {currency} {(balance.pending / 100).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </Text>
+                </View>
+              </View>
+              <View className="flex-1 flex-row items-center gap-2 rounded-2xl bg-white/15 px-3 py-2">
+                <Clock size={14} color="#fff" strokeWidth={2.4} />
+                <View>
+                  <Text className="text-white/75 text-[10px] font-bold">Em saque</Text>
+                  <Text className="text-white text-[12px] font-extrabold">
+                    {currency} {(balance.inWithdrawal / 100).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View className="mt-4 flex-row items-center gap-2">
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => setWithdrawOpen(true)}
+                disabled={balance.available <= 0}
+                className="flex-1 flex-row items-center justify-center rounded-full bg-white px-4 py-2.5"
+                style={{ opacity: balance.available <= 0 ? 0.5 : 1 }}
+              >
+                <Ionicons name="cash-outline" size={16} color="#034660" />
+                <Text className="text-[#034660] text-[12.5px] font-extrabold ml-2">Sacar</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity activeOpacity={0.85} onPress={handleOnboardStripe} className="flex-row items-center justify-center rounded-full bg-white/15 px-3.5 py-2.5">
                 <Ionicons name="link-outline" size={16} color="white" />
               </TouchableOpacity>
 
-              <TouchableOpacity activeOpacity={0.85} onPress={loadPayments} className="flex-row items-center justify-center rounded-full bg-white/15 px-4 py-2">
-                <Text className="text-white text-[12px] font-bold mr-2">{loading ? 'Atualizando...' : 'Atualizar'}</Text>
-                <Ionicons name="time-outline" size={16} color="white" />
-              </TouchableOpacity>
-
-              <TouchableOpacity activeOpacity={0.85} className="h-10 w-10 items-center justify-center rounded-full bg-white/15">
-                <Ionicons name="scan-outline" size={18} color="white" />
+              <TouchableOpacity activeOpacity={0.85} onPress={loadWallet} className="flex-row items-center justify-center rounded-full bg-white/15 px-3.5 py-2.5">
+                <Ionicons name={loading ? 'sync' : 'refresh'} size={16} color="white" />
               </TouchableOpacity>
             </View>
 
@@ -298,42 +343,58 @@ export default function CarteiraScreen() {
             title="Sem movimentos"
             description={
               paymentsTableMissing
-                ? 'Para o histórico funcionar, crie a tabela "public.payments" no Supabase (SQL em SUPABASE_SETUP.md).'
+                ? 'Para o histórico funcionar, crie as tabelas no Supabase (SQL em SUPABASE_SETUP.md / supabase_escrow_migration.sql).'
                 : filter === 'all'
                   ? 'Quando houver movimentações, elas aparecem aqui.'
                   : 'Não há movimentos para este filtro.'
             }
             actionLabel={paymentsTableMissing ? 'Tentar novamente' : filter !== 'all' ? 'Ver todos' : undefined}
-            onAction={
-              paymentsTableMissing
-                ? loadPayments
-                : filter !== 'all'
-                  ? () => setFilter('all')
-                  : undefined
-            }
+            onAction={paymentsTableMissing ? loadWallet : filter !== 'all' ? () => setFilter('all') : undefined}
           />
         }
         renderItem={({ item }) => {
-          const isPositive = item.amount >= 0;
+          const isIn = item.amount >= 0;
+          const isHeld = item.type === 'payment' && item.escrow === 'held';
           return (
             <View className="flex-row items-center rounded-3xl bg-white px-4 py-4" style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
-              <Image source={item.avatar || ProfileImage} className="h-12 w-12 rounded-full" resizeMode="cover" />
+              <View
+                className="h-11 w-11 items-center justify-center rounded-full"
+                style={{ backgroundColor: item.type === 'withdrawal' ? '#FEF3C7' : isHeld ? '#EFF6FF' : '#ECFDF5' }}
+              >
+                {item.type === 'withdrawal' ? (
+                  <ArrowUpRight size={20} color="#D97706" strokeWidth={2.6} />
+                ) : isHeld ? (
+                  <Lock size={18} color="#2563EB" strokeWidth={2.6} />
+                ) : (
+                  <ArrowDownLeft size={20} color="#059669" strokeWidth={2.6} />
+                )}
+              </View>
               <View className="ml-3 flex-1">
                 <Text className="text-[13px] font-extrabold text-gray-900">{item.name}</Text>
                 <Text className="mt-1 text-[11px] text-gray-400">
-                  {item.subtitle}{' '}
-                  <Text className="text-gray-300">• {item.date}</Text>
+                  {item.subtitle} <Text className="text-gray-300">• {item.date}</Text>
                 </Text>
               </View>
-              <Text className={`text-[12px] font-extrabold ${isPositive ? 'text-brand-cyan' : 'text-red-500'}`}>
-                {formatKz(item.amount / 100)} {currency}
+              <Text
+                className="text-[12.5px] font-extrabold"
+                style={{ color: item.type === 'withdrawal' ? '#D97706' : isHeld ? '#2563EB' : '#059669' }}
+              >
+                {isIn ? '+' : '-'}
+                {formatMoney(Math.abs(item.amount), currency)}
               </Text>
             </View>
           );
         }}
       />
+
+      <WithdrawSheet
+        visible={withdrawOpen}
+        available={balance.available}
+        currency={currency}
+        processing={withdrawing}
+        onClose={() => (withdrawing ? null : setWithdrawOpen(false))}
+        onConfirm={handleWithdraw}
+      />
     </View>
   );
 }
-
-

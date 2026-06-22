@@ -54,6 +54,9 @@ export type ProfileRow = {
 
 export type RequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed';
 
+/** Estado do dinheiro retido (escrow). 'held' = em processamento, 'released' = realizado/sacável. */
+export type EscrowStatus = 'none' | 'held' | 'released' | 'refunded';
+
 export type RequestRow = {
   id: string;
   client_id: string;
@@ -77,6 +80,17 @@ export type RequestRow = {
   accepted_at?: string | null;
   rejected_at?: string | null;
   reviewed_at?: string | null;
+  // Escrow + FlexPay
+  is_urgent?: boolean | null;
+  escrow_status?: EscrowStatus | null;
+  agreed_amount?: number | null;
+  client_total?: number | null;
+  request_fee?: number | null;
+  service_fee?: number | null;
+  urgent_bonus?: number | null;
+  provider_net?: number | null;
+  platform_net?: number | null;
+  released_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -97,11 +111,37 @@ export type PaymentRow = {
   request_id: string | null;
   client_id: string | null;
   provider_id: string | null;
-  amount: number;
+  amount: number; // total cobrado do cliente (client_total)
   currency: string;
   status: string;
   stripe_payment_intent_id: string;
   paid_at: string | null;
+  // Escrow + snapshot das taxas
+  is_urgent?: boolean | null;
+  escrow_status?: EscrowStatus | null;
+  agreed_amount?: number | null;
+  request_fee?: number | null;
+  service_fee?: number | null;
+  urgent_bonus?: number | null;
+  provider_net?: number | null;
+  platform_net?: number | null;
+  released_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WithdrawalStatus = 'processing' | 'paid' | 'failed' | 'cancelled';
+
+export type WithdrawalRow = {
+  id: string;
+  provider_id: string;
+  amount: number;
+  currency: string;
+  status: WithdrawalStatus;
+  method?: string | null;
+  requested_at: string;
+  estimated_arrival?: string | null;
+  paid_at?: string | null;
   created_at: string;
   updated_at: string;
 };

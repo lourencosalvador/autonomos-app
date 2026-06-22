@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { isSupabaseConfigured, supabase, type RequestRow, type RequestStatus } from '../lib/supabase';
+import { isSupabaseConfigured, supabase, type EscrowStatus, type RequestRow, type RequestStatus } from '../lib/supabase';
+import { releaseEscrow as releaseEscrowApi } from '../services/apiService';
 
 export type ServiceRequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed';
 
@@ -26,6 +27,17 @@ export type ServiceRequest = {
   paidAt?: string | null;
   acceptedAt?: string | null;
   reviewedAt?: string | null;
+  // Escrow + FlexPay
+  isUrgent?: boolean | null;
+  escrowStatus?: EscrowStatus | null;
+  agreedAmount?: number | null;
+  clientTotal?: number | null;
+  requestFee?: number | null;
+  serviceFee?: number | null;
+  urgentBonus?: number | null;
+  providerNet?: number | null;
+  platformNet?: number | null;
+  releasedAt?: string | null;
   createdAt: string;
 };
 
@@ -51,6 +63,16 @@ function rowToRequest(r: RequestRow): ServiceRequest {
     paidAt: (r as any).paid_at ?? null,
     acceptedAt: (r as any).accepted_at ?? null,
     reviewedAt: (r as any).reviewed_at ?? null,
+    isUrgent: (r as any).is_urgent ?? null,
+    escrowStatus: (r as any).escrow_status ?? null,
+    agreedAmount: (r as any).agreed_amount ?? null,
+    clientTotal: (r as any).client_total ?? null,
+    requestFee: (r as any).request_fee ?? null,
+    serviceFee: (r as any).service_fee ?? null,
+    urgentBonus: (r as any).urgent_bonus ?? null,
+    providerNet: (r as any).provider_net ?? null,
+    platformNet: (r as any).platform_net ?? null,
+    releasedAt: (r as any).released_at ?? null,
     createdAt: r.created_at,
   };
 }
@@ -61,7 +83,8 @@ type RequestsState = {
   addRequest: (req: Omit<ServiceRequest, 'id' | 'createdAt' | 'status'>) => Promise<void>;
   setRequestStatus: (id: string, status: ServiceRequestStatus) => Promise<void>;
   setRequestPrice: (args: { id: string; priceAmount: number; currency: string }) => Promise<void>;
-  markRequestPaid: (args: { id: string; paymentIntentId?: string | null }) => Promise<void>;
+  markRequestPaid: (args: { id: string; paymentIntentId?: string | null; isUrgent?: boolean; fees?: { clientTotal: number; requestFee: number; serviceFee: number; urgentBonus: number; providerNet: number; platformNet: number } | null }) => Promise<void>;
+  releaseEscrow: (args: { id: string; clientId?: string }) => Promise<void>;
   cancelRequest: (id: string) => Promise<void>;
   deleteRequest: (id: string) => Promise<void>;
   submitReview: (args: { requestId: string; providerId: string; clientId: string; clientAvatarUrl?: string | null; rating: 1 | 2 | 3 | 4 | 5; comment?: string }) => Promise<void>;
@@ -182,9 +205,9 @@ export const useRequestsStore = create<RequestsState>()(
         }
       },
 
-      markRequestPaid: async ({ id, paymentIntentId }) => {
+      markRequestPaid: async ({ id, paymentIntentId, isUrgent, fees }) => {
         const paidAt = new Date().toISOString();
-        // Otimista: já marca como pago + concluído no app
+        // Otimista: pago e RETIDO (escrow held). NÃO concluído — o cliente ainda precisa liberar.
         set((state) => ({
           requests: state.requests.map((r) =>
             r.id === id
@@ -193,7 +216,18 @@ export const useRequestsStore = create<RequestsState>()(
                   paymentStatus: 'succeeded',
                   paidAt,
                   stripePaymentIntentId: paymentIntentId || r.stripePaymentIntentId || null,
-                  status: 'completed',
+                  escrowStatus: 'held',
+                  ...(typeof isUrgent === 'boolean' ? { isUrgent } : {}),
+                  ...(fees
+                    ? {
+                        clientTotal: fees.clientTotal,
+                        requestFee: fees.requestFee,
+                        serviceFee: fees.serviceFee,
+                        urgentBonus: fees.urgentBonus,
+                        providerNet: fees.providerNet,
+                        platformNet: fees.platformNet,
+                      }
+                    : {}),
                 }
               : r
           ),
@@ -201,24 +235,56 @@ export const useRequestsStore = create<RequestsState>()(
 
         if (!isSupabaseConfigured) return;
 
-        // Tenta salvar tudo no Supabase (se a constraint/status ainda não estiver pronta, faz fallback)
+        // Sincroniza o pedido como pago + retido (sem mexer no status — continua 'accepted').
         const patch: any = {
           payment_status: 'succeeded',
           paid_at: paidAt,
           stripe_payment_intent_id: paymentIntentId || null,
-          status: 'completed',
+          escrow_status: 'held',
         };
+        if (typeof isUrgent === 'boolean') patch.is_urgent = isUrgent;
+        if (fees) {
+          patch.client_total = fees.clientTotal;
+          patch.request_fee = fees.requestFee;
+          patch.service_fee = fees.serviceFee;
+          patch.urgent_bonus = fees.urgentBonus;
+          patch.provider_net = fees.providerNet;
+          patch.platform_net = fees.platformNet;
+        }
         const attempt = await supabase.from('requests').update(patch).eq('id', id);
         if (attempt.error) {
-          // Fallback: salva só payment_status/paid_at (não bloqueia UX)
+          // Fallback: salva só o essencial (não bloqueia UX se colunas novas faltarem)
           await supabase
             .from('requests')
-            .update({
-              payment_status: 'succeeded',
-              paid_at: paidAt,
-              stripe_payment_intent_id: paymentIntentId || null,
-            } as any)
+            .update({ payment_status: 'succeeded', paid_at: paidAt, stripe_payment_intent_id: paymentIntentId || null } as any)
             .eq('id', id);
+        }
+      },
+
+      releaseEscrow: async ({ id, clientId }) => {
+        const releasedAt = new Date().toISOString();
+        // Otimista: liberado + concluído
+        set((state) => ({
+          requests: state.requests.map((r) =>
+            r.id === id ? { ...r, escrowStatus: 'released', releasedAt, status: 'completed' } : r
+          ),
+        }));
+
+        // Caminho principal: backend (sincroniza requests + payments com service role)
+        try {
+          await releaseEscrowApi({ requestId: id, clientId });
+          return;
+        } catch {
+          // Fallback: atualiza o pedido direto via Supabase (RLS permite ao participante).
+          // A tabela payments fica desatualizada, mas a carteira tem fallback por requests.
+          if (!isSupabaseConfigured) return;
+          const attempt = await supabase
+            .from('requests')
+            .update({ escrow_status: 'released', released_at: releasedAt, status: 'completed' } as any)
+            .eq('id', id);
+          if (attempt.error) {
+            await supabase.from('requests').update({ status: 'completed' } as any).eq('id', id);
+          }
         }
       },
 
@@ -296,6 +362,16 @@ export const useRequestsStore = create<RequestsState>()(
             paidAt: typeof r?.paidAt === 'string' ? r.paidAt : null,
             acceptedAt: r?.acceptedAt ?? null,
             reviewedAt: r?.reviewedAt ?? null,
+            isUrgent: typeof r?.isUrgent === 'boolean' ? r.isUrgent : null,
+            escrowStatus: typeof r?.escrowStatus === 'string' ? r.escrowStatus : null,
+            agreedAmount: typeof r?.agreedAmount === 'number' ? r.agreedAmount : null,
+            clientTotal: typeof r?.clientTotal === 'number' ? r.clientTotal : null,
+            requestFee: typeof r?.requestFee === 'number' ? r.requestFee : null,
+            serviceFee: typeof r?.serviceFee === 'number' ? r.serviceFee : null,
+            urgentBonus: typeof r?.urgentBonus === 'number' ? r.urgentBonus : null,
+            providerNet: typeof r?.providerNet === 'number' ? r.providerNet : null,
+            platformNet: typeof r?.platformNet === 'number' ? r.platformNet : null,
+            releasedAt: typeof r?.releasedAt === 'string' ? r.releasedAt : null,
           })),
         };
       },

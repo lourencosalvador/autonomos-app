@@ -8,7 +8,20 @@ export const API_ENDPOINTS = {
   stripePaymentIntent: `${API_BASE_URL}/api/stripe/payment-intent`,
   stripeConfirm: `${API_BASE_URL}/api/stripe/confirm`,
   stripeConnectOnboard: `${API_BASE_URL}/api/stripe/connect/onboard`,
+  escrowRelease: `${API_BASE_URL}/api/escrow/release`,
+  withdrawalRequest: `${API_BASE_URL}/api/withdrawals/request`,
   health: `${API_BASE_URL}/health`,
+};
+
+export type FeeBreakdownDTO = {
+  agreed: number;
+  isUrgent: boolean;
+  requestFee: number;
+  serviceFee: number;
+  urgentBonus: number;
+  clientTotal: number;
+  providerNet: number;
+  platformNet: number;
 };
 
 function buildJsonHeaders(url: string) {
@@ -30,6 +43,38 @@ async function safeReadJson(response: Response) {
     }
   }
   return { __raw: text, __contentType: ct };
+}
+
+/**
+ * POST com timeout e retry opcional. O backend (Render free) hiberna; a 1ª chamada
+ * pode demorar/expirar acordando o servidor — a 2ª então passa rápido.
+ * `retries: 0` para mutações NÃO idempotentes (ex: saque), pra não duplicar.
+ */
+async function postJson(url: string, body: any, opts?: { timeoutMs?: number; retries?: number }) {
+  const timeoutMs = opts?.timeoutMs ?? 45000;
+  const retries = opts?.retries ?? 1;
+  let lastErr: any;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: buildJsonHeaders(url),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      return response;
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+      // abort (timeout) ou erro de rede → tenta de novo (servidor pode estar acordando)
+    }
+  }
+  throw new Error(
+    `O servidor demorou a responder${lastErr ? '' : ''} (pode estar reiniciando após inatividade). Aguarde alguns segundos e tente novamente.`
+  );
 }
 
 export async function sendOTP(type: 'email' | 'sms', value: string) {
@@ -64,12 +109,9 @@ export async function verifyOTPCode(type: 'email' | 'sms', value: string, code: 
   return data;
 }
 
-export async function createStripePaymentIntent(args: { requestId: string; clientId?: string }) {
-  const response = await fetch(API_ENDPOINTS.stripePaymentIntent, {
-    method: 'POST',
-    headers: buildJsonHeaders(API_ENDPOINTS.stripePaymentIntent),
-    body: JSON.stringify(args),
-  });
+export async function createStripePaymentIntent(args: { requestId: string; clientId?: string; isUrgent?: boolean }) {
+  // Reutilizar o PI é seguro no backend, então pode tentar de novo após cold start.
+  const response = await postJson(API_ENDPOINTS.stripePaymentIntent, args, { timeoutMs: 40000, retries: 1 });
   const data: any = await safeReadJson(response);
   if (!response.ok) {
     const raw = typeof data?.__raw === 'string' ? data.__raw.trim() : '';
@@ -82,12 +124,47 @@ export async function createStripePaymentIntent(args: { requestId: string; clien
     paymentIntentId?: string;
     stripeMode?: 'test' | 'live' | 'unknown';
     livemode?: boolean;
+    fees?: FeeBreakdownDTO;
     connect?: {
       attempted: boolean;
       used: boolean;
       destination?: string;
       reason?: string;
     };
+  };
+}
+
+/** Cliente libera o escrow ("Serviço concluído") — torna o valor do prestador sacável. */
+export async function releaseEscrow(args: { requestId: string; clientId?: string }) {
+  // Idempotente no backend → pode tentar de novo após cold start.
+  const response = await postJson(API_ENDPOINTS.escrowRelease, args, { timeoutMs: 40000, retries: 1 });
+  const data: any = await safeReadJson(response);
+  if (!response.ok) {
+    const raw = typeof data?.__raw === 'string' ? data.__raw.trim() : '';
+    const snippet = raw ? ` (${raw.slice(0, 80)}${raw.length > 80 ? '...' : ''})` : '';
+    throw new Error(data.message || `Erro ao liberar pagamento${snippet}`);
+  }
+  return data as { ok: true; escrowStatus: 'released'; alreadyReleased?: boolean; releasedAt: string };
+}
+
+/** Prestador solicita saque (FlexPay). Retorna a previsão de chegada (24h–48h). */
+export async function requestWithdrawal(args: { providerId: string; amount?: number }) {
+  // Sem retry automático: o saque NÃO é idempotente (evita criar saque duplicado).
+  const response = await postJson(API_ENDPOINTS.withdrawalRequest, args, { timeoutMs: 60000, retries: 0 });
+  const data: any = await safeReadJson(response);
+  if (!response.ok) {
+    const raw = typeof data?.__raw === 'string' ? data.__raw.trim() : '';
+    const snippet = raw ? ` (${raw.slice(0, 80)}${raw.length > 80 ? '...' : ''})` : '';
+    throw new Error(data.message || `Erro ao solicitar saque${snippet}`);
+  }
+  return data as {
+    ok: true;
+    amount: number;
+    currency: string;
+    available: number;
+    estimatedArrival: string;
+    etaHoursMin: number;
+    etaHoursMax: number;
   };
 }
 

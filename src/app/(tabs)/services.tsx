@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { Check, Loader2, X } from 'lucide-react-native';
+import { Check, Clock, Loader2, X } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuthStore } from '../../stores/authStore';
@@ -282,7 +282,19 @@ export default function ServicesScreen() {
           renderItem={({ item, index }: any) => {
           const isReq = true;
           const statusConfig = getStatusConfig(statusFromRequest(item.status));
-          
+
+          // Escrow: pago e retido mostra "Em processamento" em vez de "Aceite"
+          const paid = String(item.paymentStatus || '') === 'succeeded' || !!item.paidAt;
+          const released = String(item.escrowStatus || '') === 'released' || item.status === 'completed';
+          const held = paid && !released;
+          const badge = held
+            ? {
+                icon: <Clock size={18} color="#2563EB" strokeWidth={2.6} />,
+                text: 'Em processamento',
+                textColor: 'text-blue-500',
+              }
+            : { icon: statusConfig.icon, text: statusConfig.text, textColor: statusConfig.textColor };
+
           const Card = (
             <TouchableOpacity
               className={`rounded-3xl border ${statusConfig.borderColor} ${statusConfig.bgColor} px-5 py-5`}
@@ -320,9 +332,9 @@ export default function ServicesScreen() {
                 </View>
 
                 <View className="flex-row items-center gap-1.5 ml-2">
-                  {statusConfig.icon}
-                  <Text className={`text-[13px] font-medium ${statusConfig.textColor}`}>
-                    {statusConfig.text}
+                  {badge.icon}
+                  <Text className={`text-[13px] font-medium ${badge.textColor}`}>
+                    {badge.text}
                   </Text>
                 </View>
               </View>

@@ -2,7 +2,7 @@ import cors from 'cors';
 import express from 'express';
 import './env.js';
 import { isStripeConfigured, stripeMode } from './lib/stripe.js';
-import { isSupabaseAdminConfigured } from './lib/supabaseAdmin.js';
+import { isSupabaseAdminConfigured, supabaseHost } from './lib/supabaseAdmin.js';
 import { sendOTPRoute } from './routes/send-otp.js';
 import { streamTokenRoute } from './routes/stream-token.js';
 import { stripeConfirmPaymentRoute } from './routes/stripe-confirm-payment.js';
@@ -33,6 +33,7 @@ app.get('/health', (req, res) => {
     stripeConfigured: isStripeConfigured,
     stripeMode,
     supabaseAdminConfigured: isSupabaseAdminConfigured,
+    supabaseHost,
   });
 });
 

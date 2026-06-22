@@ -261,6 +261,20 @@ Para Connect (recebimentos/payout), adicionamos no `profiles`:
 alter table public.profiles add column if not exists stripe_account_id text;
 ```
 
+### ⚡ Escrow + FlexPay (OBRIGATÓRIO para o novo fluxo de pagamento)
+
+O fluxo de pagamento usa **Escrow** (dinheiro retido até o cliente confirmar a conclusão)
+e **FlexPay** (saque com chegada em 24h–48h), com taxas de 10% (cliente) + 10% (prestador).
+
+Rode o script completo **`supabase_escrow_migration.sql`** (na raiz do projeto) no
+Supabase Dashboard → SQL Editor. Ele adiciona:
+- `requests`: `is_urgent`, `escrow_status`, e o snapshot das taxas (`agreed_amount`, `client_total`, `request_fee`, `service_fee`, `urgent_bonus`, `provider_net`, `platform_net`, `released_at`)
+- `payments`: as mesmas colunas de escrow/taxas (a carteira lê daqui)
+- tabela nova `withdrawals` (saques FlexPay) com RLS
+
+> Sem essa migração, o pagamento ainda inicia (o backend é resiliente), mas o estado de
+> escrow, os saques e os saldos "retido/disponível/em saque" não funcionam.
+
 ### Tabela `reviews` (Avaliações)
 
 Após o prestador aceitar o pedido, o **cliente** pode avaliar o serviço (estrelas + comentário).

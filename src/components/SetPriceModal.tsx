@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Keyboard, Modal, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { toast } from '../lib/sonner';
+import { computeFees, formatMoney } from '../lib/pricing';
 
 function toMinorUnits(value: number) {
   // Mantemos simples (2 casas). Se precisar suportar moedas sem casas, ajustamos depois.
@@ -29,6 +30,9 @@ export function SetPriceModal(props: {
     const n = Number(normalized);
     return Number.isFinite(n) ? n : 0;
   }, [majorText]);
+
+  const fees = useMemo(() => computeFees(toMinorUnits(major), false), [major]);
+  const previewCurrency = normalizeCurrency(currency);
 
   const handleSave = async () => {
     if (!major || major <= 0) return toast.error('Digite um valor válido.');
@@ -76,6 +80,24 @@ export function SetPriceModal(props: {
               />
             </View>
           </View>
+
+          {major > 0 ? (
+            <View className="mt-4 rounded-2xl bg-gray-50 px-4 py-3" style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
+              <View className="flex-row items-center justify-between py-1">
+                <Text className="text-[12px] font-bold text-gray-500">Cliente paga (com +10%)</Text>
+                <Text className="text-[12px] font-bold text-gray-700">{formatMoney(fees.clientTotal, previewCurrency)}</Text>
+              </View>
+              <View className="flex-row items-center justify-between py-1">
+                <Text className="text-[12px] font-bold text-gray-500">Taxa de serviço (−10%)</Text>
+                <Text className="text-[12px] font-bold text-gray-700">- {formatMoney(fees.serviceFee, previewCurrency)}</Text>
+              </View>
+              <View className="my-1.5 h-px bg-gray-200" />
+              <View className="flex-row items-center justify-between">
+                <Text className="text-[13px] font-extrabold text-gray-900">Você recebe</Text>
+                <Text className="text-[14px] font-extrabold text-emerald-600">{formatMoney(fees.providerNet, previewCurrency)}</Text>
+              </View>
+            </View>
+          ) : null}
 
           <View className="mt-5 flex-row gap-3">
             <TouchableOpacity

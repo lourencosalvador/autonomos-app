@@ -14,7 +14,8 @@ import UnionArt from '../../../assets/images/Union.svg';
 import { EmptyState } from '../../components/EmptyState';
 import { categories } from '../../data/categories';
 import { services } from '../../data/services';
-import { isSupabaseConfigured, supabase } from '../../lib/supabase';
+import { isSupabaseConfigured, supabase, type PaymentRow, type WithdrawalRow } from '../../lib/supabase';
+import { computeWalletBalance } from '../../lib/walletBalance';
 import { getRandomPhotos } from '../../services/unsplashService';
 import { useAuthStore } from '../../stores/authStore';
 import { useRequestsStore } from '../../stores/requestsStore';
@@ -220,31 +221,41 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
     async function run() {
       try {
         if (!user?.id || !isSupabaseConfigured) return;
-        // 1) Tenta pela tabela payments (carteira real)
+        // 1) Tenta pela tabela payments (carteira real) — saldo DISPONÍVEL (liberado − sacado)
         const { data: pays, error } = await supabase
           .from('payments')
-          .select('amount,currency,status')
-          .eq('provider_id', user.id)
-          .eq('status', 'succeeded');
+          .select('*')
+          .eq('provider_id', user.id);
+        const { data: withs } = await supabase
+          .from('withdrawals')
+          .select('*')
+          .eq('provider_id', user.id);
+
         if (!error && pays && Array.isArray(pays) && pays.length) {
-          const sum = pays.reduce((acc: number, p: any) => acc + Number(p.amount || 0), 0);
+          const bal = computeWalletBalance(pays as PaymentRow[], (withs || []) as WithdrawalRow[]);
           if (mounted) {
-            setWalletBalance(sum);
-            setWalletCurrency(String((pays[0] as any)?.currency || 'USD').toUpperCase());
+            setWalletBalance(bal.available);
+            setWalletCurrency(bal.currency);
           }
           return;
         }
 
-        // 2) Fallback: usa requests.payment_status
+        // 2) Fallback: deriva de requests (liberados = status completed)
         const { data: reqs } = await supabase
           .from('requests')
-          .select('price_amount,currency,payment_status')
+          .select('price_amount,currency,payment_status,escrow_status,provider_net,status')
           .eq('provider_id', user.id)
           .eq('payment_status', 'succeeded');
-        const sum = (reqs || []).reduce((acc: number, r: any) => acc + Number(r.price_amount || 0), 0);
+        const released = (reqs || []).filter(
+          (r: any) => r.escrow_status === 'released' || r.status === 'completed'
+        );
+        const sum = released.reduce(
+          (acc: number, r: any) => acc + Number(r.provider_net ?? r.price_amount ?? 0),
+          0
+        );
         if (mounted) {
           setWalletBalance(sum);
-          setWalletCurrency(String((reqs?.[0] as any)?.currency || 'USD').toUpperCase());
+          setWalletCurrency(String((released?.[0] as any)?.currency || 'USD').toUpperCase());
         }
       } catch {
         // silêncio
@@ -318,8 +329,8 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
               <View className="flex-row items-start justify-between">
                 <View>
                   <View className="flex-row items-center gap-2">
-                    <Text className="text-white/90 text-[13px] font-bold">Saldo Total</Text>
-                    <MaterialCommunityIcons name="bank" size={16} color="rgba(255,255,255,0.9)" />
+                    <Text className="text-white/90 text-[13px] font-bold">Saldo disponível</Text>
+                    <MaterialCommunityIcons name="flash" size={16} color="rgba(255,255,255,0.9)" />
                   </View>
                   <Text className="mt-6 text-white text-[26px] font-extrabold">{walletLabel}</Text>
                   <Text className="mt-2 text-white/80 text-[12px] tracking-widest">**** **** **** 6589</Text>
