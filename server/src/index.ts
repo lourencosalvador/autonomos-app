@@ -52,5 +52,17 @@ app.listen(Number(PORT), HOST, () => {
   console.log(`📱 Twilio configurado: ${process.env.TWILIO_ACCOUNT_SID ? '✅' : '❌'}`);
   console.log(`💬 Stream configurado: ${process.env.STREAM_API_KEY && process.env.STREAM_API_SECRET ? '✅' : '❌'}`);
   console.log(`💳 Stripe configurado: ${process.env.STRIPE_SECRET_KEY ? '✅' : '❌'}`);
+
+  // Keep-alive: o plano free do Render hiberna após ~15 min de inatividade, e o 1º request
+  // depois disso leva ~50s+ (cold start), estourando o tempo do pagamento. Este auto-ping
+  // mantém o serviço acordado. RENDER_EXTERNAL_URL é injetada automaticamente pelo Render.
+  const selfUrl = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
+  if (process.env.NODE_ENV === 'production' && selfUrl) {
+    const PING_INTERVAL_MS = 10 * 60 * 1000; // 10 min (Render dorme com ~15 min de inatividade)
+    setInterval(() => {
+      fetch(`${selfUrl}/health`).catch(() => {});
+    }, PING_INTERVAL_MS);
+    console.log(`⏰ Keep-alive ativo: auto-ping em ${selfUrl}/health a cada 10min`);
+  }
 });
 
