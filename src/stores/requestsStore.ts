@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { isSupabaseConfigured, supabase, type EscrowStatus, type RequestRow, type RequestStatus } from '../lib/supabase';
 import { releaseEscrow as releaseEscrowApi } from '../services/apiService';
+import { computeClientRating } from '../lib/reviews';
 
 export type ServiceRequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed';
 
@@ -27,6 +28,7 @@ export type ServiceRequest = {
   paidAt?: string | null;
   acceptedAt?: string | null;
   reviewedAt?: string | null;
+  clientReviewedAt?: string | null; // prestador já avaliou o cliente
   // Escrow + FlexPay
   isUrgent?: boolean | null;
   escrowStatus?: EscrowStatus | null;
@@ -63,6 +65,7 @@ function rowToRequest(r: RequestRow): ServiceRequest {
     paidAt: (r as any).paid_at ?? null,
     acceptedAt: (r as any).accepted_at ?? null,
     reviewedAt: (r as any).reviewed_at ?? null,
+    clientReviewedAt: (r as any).client_reviewed_at ?? null,
     isUrgent: (r as any).is_urgent ?? null,
     escrowStatus: (r as any).escrow_status ?? null,
     agreedAmount: (r as any).agreed_amount ?? null,
@@ -87,7 +90,26 @@ type RequestsState = {
   releaseEscrow: (args: { id: string; clientId?: string }) => Promise<void>;
   cancelRequest: (id: string) => Promise<void>;
   deleteRequest: (id: string) => Promise<void>;
-  submitReview: (args: { requestId: string; providerId: string; clientId: string; clientAvatarUrl?: string | null; rating: 1 | 2 | 3 | 4 | 5; comment?: string }) => Promise<void>;
+  submitReview: (args: {
+    requestId: string;
+    providerId: string;
+    clientId: string;
+    clientAvatarUrl?: string | null;
+    rating: 1 | 2 | 3 | 4 | 5;
+    comment?: string;
+    wellExecuted?: boolean;
+    wouldRecommend?: boolean;
+    inappropriateBehavior?: boolean;
+  }) => Promise<void>;
+  submitClientReview: (args: {
+    requestId: string;
+    providerId: string;
+    clientId: string;
+    providerAvatarUrl?: string | null;
+    polite: boolean;
+    changedScope: boolean;
+    comment?: string;
+  }) => Promise<void>;
   clear: () => void;
 };
 
@@ -307,9 +329,9 @@ export const useRequestsStore = create<RequestsState>()(
         if (error) throw error;
       },
 
-      submitReview: async ({ requestId, providerId, clientId, clientAvatarUrl, rating, comment }) => {
+      submitReview: async ({ requestId, providerId, clientId, clientAvatarUrl, rating, comment, wellExecuted, wouldRecommend, inappropriateBehavior }) => {
         if (!isSupabaseConfigured) return;
-        const payload = {
+        const base = {
           request_id: requestId,
           provider_id: providerId,
           client_id: clientId,
@@ -317,13 +339,20 @@ export const useRequestsStore = create<RequestsState>()(
           rating,
           comment: comment?.trim() ? comment.trim() : null,
         };
-        const { error: insErr } = await supabase.from('reviews').insert(payload as any);
+        const full = {
+          ...base,
+          well_executed: typeof wellExecuted === 'boolean' ? wellExecuted : null,
+          would_recommend: typeof wouldRecommend === 'boolean' ? wouldRecommend : null,
+          inappropriate_behavior: typeof inappropriateBehavior === 'boolean' ? inappropriateBehavior : null,
+        };
+
+        let insErr = (await supabase.from('reviews').insert(full as any)).error;
+        if (insErr && /could not find the .* column/i.test(String((insErr as any)?.message || ''))) {
+          // Migração ainda não rodada: grava só os campos antigos pra não travar.
+          insErr = (await supabase.from('reviews').insert(base as any)).error;
+        }
         if (insErr) {
-          // 23505 = unique_violation (já existe avaliação para este request_id)
-          if (String((insErr as any)?.code || '') === '23505') {
-            // Considera como sucesso para evitar travar UX em double-tap/retry.
-            return;
-          }
+          if (String((insErr as any)?.code || '') === '23505') return; // já avaliado (double-tap)
           throw insErr;
         }
 
@@ -333,6 +362,34 @@ export const useRequestsStore = create<RequestsState>()(
 
         set((state) => ({
           requests: state.requests.map((r) => (r.id === requestId ? { ...r, reviewedAt } : r)),
+        }));
+      },
+
+      submitClientReview: async ({ requestId, providerId, clientId, providerAvatarUrl, polite, changedScope, comment }) => {
+        if (!isSupabaseConfigured) return;
+        const rating = computeClientRating(polite, changedScope);
+        const payload = {
+          request_id: requestId,
+          provider_id: providerId,
+          client_id: clientId,
+          provider_avatar_url: providerAvatarUrl ?? null,
+          polite,
+          changed_scope: changedScope,
+          rating,
+          comment: comment?.trim() ? comment.trim() : null,
+        };
+        const { error: insErr } = await supabase.from('client_reviews').insert(payload as any);
+        if (insErr) {
+          if (String((insErr as any)?.code || '') === '23505') return; // já avaliado
+          throw insErr;
+        }
+
+        const clientReviewedAt = new Date().toISOString();
+        // Não bloqueia se a coluna ainda não existir
+        await supabase.from('requests').update({ client_reviewed_at: clientReviewedAt } as any).eq('id', requestId);
+
+        set((state) => ({
+          requests: state.requests.map((r) => (r.id === requestId ? { ...r, clientReviewedAt } : r)),
         }));
       },
 

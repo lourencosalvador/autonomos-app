@@ -35,6 +35,8 @@ async function inferAndFixRole(userId: string, profile: ProfileRow | null) {
 
 export type UserRole = 'client' | 'professional';
 
+export type Availability = { days: number[]; start: string; end: string };
+
 export interface User {
   id: string;
   name: string;
@@ -46,6 +48,14 @@ export interface User {
   autoAcceptMessage?: string | null;
   gender?: string | null;
   birthDate?: string | null; // YYYY-MM-DD
+  // Onboarding do prestador
+  bio?: string | null;
+  workDescription?: string | null;
+  experienceTime?: string | null; // 'lt1' | '2' | '3plus'
+  availability?: Availability | null;
+  onboardingCompleted?: boolean;
+  approvalStatus?: 'approved' | 'pending' | 'rejected' | null;
+  approvalNote?: string | null;
 }
 
 interface AuthState {
@@ -56,7 +66,7 @@ interface AuthState {
   
   init: () => Promise<() => void>;
   refreshProfile: () => Promise<void>;
-  updateProfile: (data: { name?: string; phone?: string | null; avatarUrl?: string | null; workArea?: string | null; autoAcceptMessage?: string | null; gender?: string | null; birthDate?: string | null; }) => Promise<void>;
+  updateProfile: (data: { name?: string; phone?: string | null; avatarUrl?: string | null; workArea?: string | null; autoAcceptMessage?: string | null; gender?: string | null; birthDate?: string | null; bio?: string | null; workDescription?: string | null; experienceTime?: string | null; availability?: Availability | null; onboardingCompleted?: boolean; approvalStatus?: 'approved' | 'pending' | 'rejected'; }) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (
     name: string,
@@ -98,48 +108,54 @@ export const useAuthStore = create<AuthState>()(
           const metaName = meta.full_name || meta.name || '';
           const metaAvatar = meta.avatar_url || meta.picture || meta.avatar || null;
 
-          // Busca (ou cria) profile
+          const prev = get().user;
+
+          // Busca o profile
           let profile: ProfileRow | null = null;
           const { data, error } = await supabase
             .from('profiles')
-            .select('id, role, name, phone, avatar_url, work_area, auto_accept_message, gender, birth_date, created_at, updated_at')
+            .select('*')
             .eq('id', sbUser.id)
             .maybeSingle();
 
+          // IMPORTANTE: se a leitura FALHOU (RLS/rede), NÃO escrevemos nada (não sobrescrever
+          // dados existentes). Mantemos o login com o que já sabemos (estado persistido).
           if (error) {
-            // Se a tabela ainda não existir / RLS bloqueando, mantemos login, mas role vira null.
-            profile = null;
-          } else {
-            profile = data as any;
+            set({
+              user: {
+                id: sbUser.id,
+                email,
+                name: prev?.name || metaName || email,
+                role: prev?.role ?? null,
+                avatar: prev?.avatar || metaAvatar || undefined,
+                phone: prev?.phone ?? null,
+                workArea: prev?.workArea ?? null,
+                autoAcceptMessage: prev?.autoAcceptMessage ?? null,
+                gender: prev?.gender ?? null,
+                birthDate: prev?.birthDate ?? null,
+                bio: prev?.bio ?? null,
+                workDescription: prev?.workDescription ?? null,
+                experienceTime: prev?.experienceTime ?? null,
+                availability: prev?.availability ?? null,
+                onboardingCompleted: prev?.onboardingCompleted,
+                approvalStatus: prev?.approvalStatus ?? null,
+                approvalNote: prev?.approvalNote ?? null,
+              },
+              isAuthenticated: true,
+              isLoading: false,
+            });
+            return;
           }
 
+          profile = data as any;
+
+          // Só cria a linha quando ela REALMENTE não existe (sem sobrescrever colunas existentes).
           if (!profile) {
-            // tenta criar profile mínimo
             await supabase.from('profiles').upsert(
-              {
-                id: sbUser.id,
-                role: null,
-                name: metaName || null,
-                phone: null,
-                avatar_url: metaAvatar,
-                work_area: null,
-                auto_accept_message: null,
-                gender: null,
-                birth_date: null,
-              },
+              { id: sbUser.id, role: null, name: metaName || null, avatar_url: metaAvatar },
               { onConflict: 'id' }
             );
-            profile = {
-              id: sbUser.id,
-              role: null,
-              name: metaName || null,
-              phone: null,
-              avatar_url: metaAvatar,
-              work_area: null,
-              auto_accept_message: null,
-              gender: null,
-              birth_date: null,
-            };
+            profile = { id: sbUser.id, role: null, name: metaName || null, avatar_url: metaAvatar } as any;
           }
 
           const safeProfile = profile;
@@ -157,6 +173,14 @@ export const useAuthStore = create<AuthState>()(
               autoAcceptMessage: (safeProfile as any)?.auto_accept_message ?? null,
               gender: (safeProfile as any)?.gender ?? null,
               birthDate: (safeProfile as any)?.birth_date ?? null,
+              bio: (safeProfile as any)?.bio ?? null,
+              workDescription: (safeProfile as any)?.work_description ?? null,
+              experienceTime: (safeProfile as any)?.experience_time ?? null,
+              availability: (safeProfile as any)?.availability ?? null,
+              // true/false quando a coluna existe; undefined se a migração ainda não rodou
+              onboardingCompleted: (safeProfile as any)?.onboarding_completed,
+              approvalStatus: (safeProfile as any)?.approval_status ?? null,
+              approvalNote: (safeProfile as any)?.approval_note ?? null,
             },
             isAuthenticated: true,
             isLoading: false,
@@ -188,7 +212,7 @@ export const useAuthStore = create<AuthState>()(
         const fetch = async () =>
           supabase
             .from('profiles')
-            .select('id, role, name, phone, avatar_url, work_area, auto_accept_message, gender, birth_date')
+            .select('*')
             .eq('id', current.id)
             .maybeSingle();
 
@@ -214,11 +238,18 @@ export const useAuthStore = create<AuthState>()(
             autoAcceptMessage: p.auto_accept_message ?? current.autoAcceptMessage ?? null,
             gender: p.gender ?? current.gender ?? null,
             birthDate: p.birth_date ?? current.birthDate ?? null,
+            bio: p.bio ?? current.bio ?? null,
+            workDescription: p.work_description ?? current.workDescription ?? null,
+            experienceTime: p.experience_time ?? current.experienceTime ?? null,
+            availability: p.availability ?? current.availability ?? null,
+            onboardingCompleted: typeof p.onboarding_completed === 'boolean' ? p.onboarding_completed : current.onboardingCompleted,
+            approvalStatus: p.approval_status ?? current.approvalStatus ?? null,
+            approvalNote: p.approval_note ?? current.approvalNote ?? null,
           },
         });
       },
 
-      updateProfile: async ({ name, phone, avatarUrl, workArea, autoAcceptMessage, gender, birthDate }) => {
+      updateProfile: async ({ name, phone, avatarUrl, workArea, autoAcceptMessage, gender, birthDate, bio, workDescription, experienceTime, availability, onboardingCompleted, approvalStatus }) => {
         const current = get().user;
         if (!current) return;
         assertSupabaseConfigured();
@@ -232,12 +263,21 @@ export const useAuthStore = create<AuthState>()(
           if (autoAcceptMessage !== undefined) payload.auto_accept_message = autoAcceptMessage;
           if (gender !== undefined) payload.gender = gender;
           if (birthDate !== undefined) payload.birth_date = birthDate;
+          if (bio !== undefined) payload.bio = bio;
+          if (workDescription !== undefined) payload.work_description = workDescription;
+          if (experienceTime !== undefined) payload.experience_time = experienceTime;
+          if (availability !== undefined) payload.availability = availability;
+          if (onboardingCompleted !== undefined) payload.onboarding_completed = onboardingCompleted;
+          if (approvalStatus !== undefined) {
+            payload.approval_status = approvalStatus;
+            payload.approval_requested_at = new Date().toISOString();
+          }
 
           // Upsert para garantir que a linha exista (evita erro quando profiles ainda não tem row)
           const { data, error } = await supabase
             .from('profiles')
             .upsert({ id: current.id, ...payload }, { onConflict: 'id' })
-            .select('id, role, name, phone, avatar_url, work_area, auto_accept_message, gender, birth_date')
+            .select('*')
             .maybeSingle();
           if (error) throw error;
 
@@ -253,6 +293,13 @@ export const useAuthStore = create<AuthState>()(
               autoAcceptMessage: p.auto_accept_message ?? current.autoAcceptMessage ?? null,
               gender: p.gender ?? current.gender ?? null,
               birthDate: p.birth_date ?? current.birthDate ?? null,
+              bio: p.bio ?? current.bio ?? null,
+              workDescription: p.work_description ?? current.workDescription ?? null,
+              experienceTime: p.experience_time ?? current.experienceTime ?? null,
+              availability: p.availability ?? current.availability ?? null,
+              onboardingCompleted: typeof p.onboarding_completed === 'boolean' ? p.onboarding_completed : current.onboardingCompleted,
+              approvalStatus: p.approval_status ?? current.approvalStatus ?? null,
+              approvalNote: p.approval_note ?? current.approvalNote ?? null,
             },
             isLoading: false,
           });

@@ -1,84 +1,94 @@
-import { Feather, } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
-import { BriefcaseBusiness } from 'lucide-react-native';
-import { Image, View } from 'react-native';
-import ProfileImage from '../../../assets/images/Profile.jpg';
+import { useState } from 'react';
+import { TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
+import { GateModal } from '../../components/GateModal';
 
-export default function TabsLayout() {
-  const { user } = useAuthStore();
+const ICONS: Record<string, keyof typeof Feather.glyphMap> = {
+  home: 'home',
+  messages: 'message-square',
+  services: 'briefcase',
+  profile: 'user',
+};
+
+function FloatingTabBar({ state, navigation }: any) {
+  const insets = useSafeAreaInsets();
+  const user = useAuthStore((s) => s.user);
+  const [gateOpen, setGateOpen] = useState(false);
+
+  // Prestador ainda não aprovado: só o Perfil fica ativo.
+  const locked =
+    user?.role === 'professional' && (user?.approvalStatus === 'pending' || user?.approvalStatus === 'rejected');
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: '#00E7FF',
-        tabBarInactiveTintColor: '#99999991',
-        tabBarStyle: {
-          backgroundColor: '#FFFFFF',
-          height: 100,
-          paddingBottom: 10,
-          paddingTop: 20,
-          elevation: 0,
-          shadowOpacity: 0,
-          borderTopColor: '#00E7FF38',
-          borderTopWidth: 1.5,
-        },
-        tabBarLabelStyle: {
-          fontSize: 13,
-          fontWeight: '700',
-          marginTop: 4,
-        },
-      }}
-    >
-      <Tabs.Screen
-        name="home"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color, focused }) => (
-            <Feather name="home" size={24} color={color} strokeWidth={2} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="messages"
-        options={{
-          title: 'Mensagens',
-          tabBarIcon: ({ color, focused }) => (
-            <Feather name="message-square" size={24} color={color} strokeWidth={2} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="services"
-        options={{
-          title: 'Serviços',
-          tabBarIcon: ({ color, focused }) => (
-            <BriefcaseBusiness size={24} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: 'Perfil',
-          tabBarIcon: ({ color, focused }) => (
-            <View className="h-8 w-8 rounded-full overflow-hidden " style={{ borderColor: focused ? '#00E7FF' : '#B8B8B8' }}>
-              {user?.avatar ? (
-                <Image 
-                  source={{ uri: user.avatar }} 
-                  className="h-full w-full"
-                  resizeMode="cover"
-                />
-              ) : (
-                <View className="h-full w-full items-center justify-center" style={{ backgroundColor: focused ? '#00E7FF' : '#B8B8B8' }}>
-                  <Image source={ProfileImage} className="h-full w-full" resizeMode="cover" />
-                </View>
-              )}
-            </View>
-          ),
-        }}
-      />
+    <>
+      <View style={{ paddingHorizontal: 22, paddingTop: 10, paddingBottom: Math.max(insets.bottom, 14), backgroundColor: '#FFFFFF' }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-around',
+            backgroundColor: '#FFFFFF',
+            height: 66,
+            borderRadius: 40,
+            paddingHorizontal: 8,
+            shadowColor: '#0B3A45',
+            shadowOpacity: 0.12,
+            shadowRadius: 16,
+            shadowOffset: { width: 0, height: 8 },
+            elevation: 12,
+          }}
+        >
+          {state.routes.map((route: any, index: number) => {
+            const focused = state.index === index;
+            const iconName = ICONS[route.name] || 'circle';
+            const isLockedTab = locked && route.name !== 'profile';
+
+            const onPress = () => {
+              if (isLockedTab) {
+                setGateOpen(true);
+                return;
+              }
+              const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+              if (!focused && !event.defaultPrevented) navigation.navigate(route.name);
+            };
+
+            return (
+              <TouchableOpacity key={route.key} onPress={onPress} activeOpacity={0.85} style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                {focused && !isLockedTab ? (
+                  <View style={{ height: 48, width: 48, borderRadius: 24, backgroundColor: '#0B0B0B', alignItems: 'center', justifyContent: 'center' }}>
+                    <Feather name={iconName} size={22} color="#FFFFFF" />
+                  </View>
+                ) : (
+                  <View style={{ alignItems: 'center', justifyContent: 'center', opacity: isLockedTab ? 0.45 : 1 }}>
+                    <Feather name={iconName} size={24} color={isLockedTab ? '#C7CED6' : '#A0AAB4'} />
+                    {isLockedTab ? (
+                      <View style={{ position: 'absolute', top: -2, right: -6, height: 14, width: 14, borderRadius: 7, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}>
+                        <Feather name="lock" size={9} color="#94A3B8" />
+                      </View>
+                    ) : null}
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+
+      <GateModal visible={gateOpen} status={user?.approvalStatus as any} note={user?.approvalNote} onClose={() => setGateOpen(false)} />
+    </>
+  );
+}
+
+export default function TabsLayout() {
+  return (
+    <Tabs screenOptions={{ headerShown: false }} tabBar={(props) => <FloatingTabBar {...props} />}>
+      <Tabs.Screen name="home" options={{ title: 'Home' }} />
+      <Tabs.Screen name="messages" options={{ title: 'Mensagens' }} />
+      <Tabs.Screen name="services" options={{ title: 'Serviços' }} />
+      <Tabs.Screen name="profile" options={{ title: 'Perfil' }} />
     </Tabs>
   );
 }

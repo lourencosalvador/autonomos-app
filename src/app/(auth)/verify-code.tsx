@@ -4,6 +4,7 @@ import { OTPInput } from 'input-otp-native';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Keyboard, Text, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
 import { sendOTP, verifyOTPCode } from '../../services/apiService';
+import { haptics } from '../../lib/haptics';
 
 export default function VerifyCodeScreen() {
   const router = useRouter();
@@ -25,8 +26,9 @@ export default function VerifyCodeScreen() {
       const value = params.contact || '';
       
       await verifyOTPCode(type, value, code);
-      
+
       setIsVerifying(false);
+      haptics.success();
       Alert.alert('Sucesso!', 'Código verificado. Agora você pode redefinir sua senha.', [
         { text: 'OK', onPress: () => router.replace('/(auth)/login') }
       ]);

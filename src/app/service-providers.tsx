@@ -105,6 +105,7 @@ export default function ServiceProvidersScreen() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [providers, setProviders] = useState<ProviderRow[]>([]);
+  const [ratings, setRatings] = useState<Record<string, { avg: number; count: number }>>({});
   const [error, setError] = useState<string | null>(null);
 
   const loadProviders = async () => {
@@ -137,6 +138,26 @@ export default function ServiceProvidersScreen() {
         return patterns.some((pat) => area.includes(pat));
       });
       setProviders(list);
+
+      // Notas (estrelas) de cada prestador listado
+      const ids = list.map((p) => p.id);
+      if (ids.length) {
+        const { data: revs } = await supabase.from('reviews').select('provider_id, rating').in('provider_id', ids);
+        const agg: Record<string, { sum: number; count: number }> = {};
+        (revs || []).forEach((r: any) => {
+          const id = String(r.provider_id);
+          if (!agg[id]) agg[id] = { sum: 0, count: 0 };
+          agg[id].sum += Number(r.rating || 0);
+          agg[id].count += 1;
+        });
+        const map: Record<string, { avg: number; count: number }> = {};
+        Object.keys(agg).forEach((id) => {
+          map[id] = { avg: agg[id].count ? agg[id].sum / agg[id].count : 0, count: agg[id].count };
+        });
+        setRatings(map);
+      } else {
+        setRatings({});
+      }
     } catch (e) {
       setProviders([]);
       setError(e instanceof Error ? e.message : 'Não foi possível carregar os prestadores.');
@@ -203,8 +224,8 @@ export default function ServiceProvidersScreen() {
             placeholder="Pesquisar"
             placeholderTextColor="#9CA3AF"
           />
-          <View className="p-3 flex justify-center items-center rounded-full bg-white">
-            <Ionicons name="search" size={20} color="#9CA3AF" />
+          <View className="p-3 flex justify-center items-center rounded-full" style={{ backgroundColor: '#00E7FF' }}>
+            <Ionicons name="search" size={20} color="#FFFFFF" />
           </View>
         </View>
       </View>
@@ -240,77 +261,84 @@ export default function ServiceProvidersScreen() {
             }}
           />
         }
-        renderItem={({ item }) => (
-          <View className="flex-row items-center rounded-2xl bg-white px-4 py-3" style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
-            <Image source={item.avatar_url ? { uri: item.avatar_url } : AvatarFallback} className="h-12 w-12 rounded-full" resizeMode="cover" />
-            <View className="ml-3 flex-1">
-              <Text className="text-[13px] font-extrabold text-gray-900">{item.name || 'Prestador'}</Text>
-              <Text className="text-[11px] text-gray-400">{item.work_area || serviceName}</Text>
-            </View>
+        renderItem={({ item }) => {
+          const r = ratings[item.id];
+          const existing =
+            user?.role === 'client' && user?.id
+              ? requests
+                  .filter(
+                    (req) =>
+                      req.clientId === user.id &&
+                      req.providerId === item.id &&
+                      req.serviceName === serviceName &&
+                      req.status !== 'cancelled'
+                  )
+                  .sort((a, b) => {
+                    const ta = Date.parse(a.createdAt);
+                    const tb = Date.parse(b.createdAt);
+                    if (Number.isFinite(ta) && Number.isFinite(tb)) return tb - ta;
+                    return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+                  })[0]
+              : null;
+          const pending = !!existing && (existing.status === 'pending' || existing.status === 'accepted');
 
-            {(() => {
-              const existing =
-                user?.role === 'client' && user?.id
-                  ? requests
-                      .filter(
-                        (r) =>
-                          r.clientId === user.id &&
-                          r.providerId === item.id &&
-                          r.serviceName === serviceName &&
-                          r.status !== 'cancelled'
-                      )
-                      .sort((a, b) => {
-                        const ta = Date.parse(a.createdAt);
-                        const tb = Date.parse(b.createdAt);
-                        if (Number.isFinite(ta) && Number.isFinite(tb)) return tb - ta;
-                        // fallback determinístico quando parse falhar
-                        return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
-                      })[0]
-                  : null;
+          const onPress = () => {
+            if (pending && existing) {
+              router.push({ pathname: '/request-details', params: { requestId: existing.id } });
+            } else {
+              router.push({
+                pathname: '/perfil-prestador',
+                params: {
+                  serviceName,
+                  providerId: item.id,
+                  providerName: item.name || 'Prestador',
+                  providerJob: item.work_area || serviceName,
+                  providerAvatarUrl: item.avatar_url || undefined,
+                },
+              });
+            }
+          };
 
-              if (existing) {
-                // Regra: se estiver PENDENTE ou ACEITE, não deixa criar outro; mostra status (clicável).
-                // Se estiver REJEITADO, deixa pedir novamente (mostra "Termos").
-                if (existing.status === 'pending' || existing.status === 'accepted') {
-                  const label = existing.status === 'accepted' ? 'Aceite' : 'Pendente';
-                  const bg = existing.status === 'accepted' ? 'bg-cyan-100' : 'bg-gray-200';
-                  const fg = existing.status === 'accepted' ? 'text-brand-cyan' : 'text-gray-500';
-
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.85}
-                      onPress={() => router.push({ pathname: '/request-details', params: { requestId: existing.id } })}
-                      className={`px-5 py-2 rounded-full ${bg}`}
-                    >
-                      <Text className={`text-[12px] font-extrabold ${fg}`}>{label}</Text>
-                    </TouchableOpacity>
-                  );
-                }
-              }
-
-              return (
+          return (
             <TouchableOpacity
               activeOpacity={0.85}
-              onPress={() =>
-                router.push({
-                  pathname: '/perfil-prestador',
-                  params: {
-                    serviceName,
-                    providerId: item.id,
-                    providerName: item.name || 'Prestador',
-                    providerJob: item.work_area || serviceName,
-                    providerAvatarUrl: item.avatar_url || undefined,
-                  },
-                })
-              }
-              className="px-5 py-2 rounded-full bg-brand-cyan"
+              onPress={onPress}
+              className="flex-row items-center rounded-3xl bg-white p-3"
+              style={{ borderWidth: 1, borderColor: '#F1F5F9', shadowColor: '#0B3A45', shadowOpacity: 0.06, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 2 }}
             >
-              <Text className="text-[12px] font-extrabold text-white">Ver perfil</Text>
+              <Image source={item.avatar_url ? { uri: item.avatar_url } : AvatarFallback} style={{ width: 68, height: 68, borderRadius: 18 }} resizeMode="cover" />
+
+              <View className="ml-3 flex-1">
+                <Text className="text-[15px] font-extrabold text-gray-900" numberOfLines={1}>
+                  {item.name || 'Prestador'}
+                </Text>
+                <Text className="mt-0.5 text-[12px] font-bold text-gray-400" numberOfLines={1}>
+                  {item.work_area || serviceName}
+                </Text>
+                <Text className="mt-1.5 text-[14px] font-extrabold text-brand-cyan">
+                  A combinar <Text className="text-[11px] font-bold text-gray-400">· por serviço</Text>
+                </Text>
+              </View>
+
+              <View className="items-end justify-between self-stretch py-1">
+                {pending && existing ? (
+                  <View className={`rounded-full px-3 py-1 ${existing.status === 'accepted' ? 'bg-cyan-100' : 'bg-gray-100'}`}>
+                    <Text className={`text-[11px] font-extrabold ${existing.status === 'accepted' ? 'text-brand-cyan' : 'text-gray-500'}`}>
+                      {existing.status === 'accepted' ? 'Aceite' : 'Pendente'}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ height: 20 }} />
+                )}
+
+                <View className="flex-row items-center gap-1 rounded-full px-2.5 py-1" style={{ backgroundColor: '#FFF7E6' }}>
+                  <Ionicons name="star" size={13} color="#F59E0B" />
+                  <Text className="text-[12px] font-extrabold text-amber-700">{r?.count ? r.avg.toFixed(1) : 'novo'}</Text>
+                </View>
+              </View>
             </TouchableOpacity>
-              );
-            })()}
-          </View>
-        )}
+          );
+        }}
       />
       )}
     </View>

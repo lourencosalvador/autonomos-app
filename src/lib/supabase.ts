@@ -101,8 +101,26 @@ export type ReviewRow = {
   provider_id: string;
   client_id: string;
   client_avatar_url?: string | null;
-  rating: number; // 1..5
-  comment: string | null;
+  rating: number; // 1..5 — "Que nota daria ao trabalho?"
+  comment: string | null; // observação opcional
+  // Perguntas de múltipla escolha (cliente avalia prestador)
+  well_executed?: boolean | null; // "O trabalho foi bem executado?"
+  would_recommend?: boolean | null; // "Recomendaria?"
+  inappropriate_behavior?: boolean | null; // "O prestador teve comportamento inadequado?"
+  created_at: string;
+};
+
+// Prestador avalia o CLIENTE
+export type ClientReviewRow = {
+  id: string;
+  request_id: string;
+  provider_id: string; // quem avalia
+  client_id: string; // avaliado
+  provider_avatar_url?: string | null;
+  polite?: boolean | null; // "O cliente foi educado durante a interação?"
+  changed_scope?: boolean | null; // "O cliente mudou o tipo do serviço depois do acordo?"
+  rating: number; // 1..5 derivado
+  comment?: string | null;
   created_at: string;
 };
 

@@ -119,6 +119,32 @@ export default function ProfileScreen() {
 function ClientProfile() {
   const router = useRouter();
   const { user, signOut } = useAuthStore();
+  const [rating, setRating] = useState<{ avg: number; count: number }>({ avg: 0, count: 0 });
+
+  useEffect(() => {
+    if (!user?.id || !isSupabaseConfigured) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase.from('client_reviews').select('rating').eq('client_id', user.id);
+        if (error) throw error;
+        const list = Array.isArray(data) ? data : [];
+        const count = list.length;
+        const sum = list.reduce((acc: number, r: any) => acc + Number(r?.rating || 0), 0);
+        if (mounted) setRating({ avg: count ? sum / count : 0, count });
+      } catch {
+        if (mounted) setRating({ avg: 0, count: 0 });
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id]);
+
+  const clientStars = useMemo(() => {
+    const full = Math.round(rating.avg);
+    return [1, 2, 3, 4, 5].map((i) => i <= full);
+  }, [rating.avg]);
 
   const handleSignOut = () => {
     Alert.alert(
@@ -176,6 +202,15 @@ function ClientProfile() {
           <Text className="mt-1 text-[15px] text-black/80">
             {user?.email || 'marcelopedrovica@gmail.com'}
           </Text>
+
+          <View className="mt-3 flex-row items-center gap-1">
+            {clientStars.map((on, idx) => (
+              <Ionicons key={idx} name={on ? 'star' : 'star-outline'} size={16} color={on ? '#FBBF24' : 'rgba(255,255,255,0.7)'} />
+            ))}
+            <Text className="ml-2 text-white/90 text-[12px] font-bold">
+              {rating.count ? `${rating.avg.toFixed(1)} (${rating.count})` : 'Sem avaliações'}
+            </Text>
+          </View>
         </View>
       </AnimatedSuccessHeader>
 

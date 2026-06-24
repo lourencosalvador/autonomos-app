@@ -12,7 +12,9 @@ import { SetPriceModal } from '../components/SetPriceModal';
 import { confirmStripePayment, createStripePaymentIntent, getBackendHealth } from '../services/apiService';
 import { useStripe } from '@stripe/stripe-react-native';
 import { PaymentBreakdownSheet } from '../components/PaymentBreakdownSheet';
+import { ClientReviewModal } from '../components/ClientReviewModal';
 import { computeFees, formatMoney } from '../lib/pricing';
+import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import * as Linking from 'expo-linking';
 
 function statusUi(status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed') {
@@ -54,6 +56,7 @@ export default function RequestDetailsScreen() {
   const setRequestPrice = useRequestsStore((s) => s.setRequestPrice);
   const markRequestPaid = useRequestsStore((s) => s.markRequestPaid);
   const releaseEscrow = useRequestsStore((s) => s.releaseEscrow);
+  const submitClientReview = useRequestsStore((s) => s.submitClientReview);
   const cancelRequest = useRequestsStore((s) => s.cancelRequest);
   const deleteRequest = useRequestsStore((s) => s.deleteRequest);
   const fetchRequests = useRequestsStore((s) => s.fetchRequests);
@@ -61,6 +64,9 @@ export default function RequestDetailsScreen() {
   const [payOpen, setPayOpen] = useState(false);
   const [paying, setPaying] = useState(false);
   const [releasing, setReleasing] = useState(false);
+  const [clientReviewOpen, setClientReviewOpen] = useState(false);
+  const [submittingClientReview, setSubmittingClientReview] = useState(false);
+  const [clientRating, setClientRating] = useState<{ avg: number; count: number }>({ avg: 0, count: 0 });
   const stripe = useStripe();
 
   // O backend no Render (free) hiberna após inatividade. Acordamos assim que o pedido abre,
@@ -68,6 +74,39 @@ export default function RequestDetailsScreen() {
   useEffect(() => {
     getBackendHealth().catch(() => {});
   }, []);
+
+  // Nota do cliente (estrelas dadas pelos prestadores) — mostrada para o prestador.
+  useEffect(() => {
+    const clientId = (request as any)?.clientId;
+    if (!clientId || !isSupabaseConfigured) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase.from('client_reviews').select('rating').eq('client_id', clientId);
+        if (error) throw error;
+        const list = Array.isArray(data) ? data : [];
+        const count = list.length;
+        const sum = list.reduce((acc: number, r: any) => acc + Number(r?.rating || 0), 0);
+        if (mounted) setClientRating({ avg: count ? sum / count : 0, count });
+      } catch {
+        if (mounted) setClientRating({ avg: 0, count: 0 });
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [(request as any)?.clientId, (request as any)?.clientReviewedAt]);
+
+  // Prestador: depois do serviço ser realizado (escrow liberado), abre a janela de avaliação
+  // do cliente automaticamente (uma vez), se ainda não avaliou.
+  useEffect(() => {
+    if (!request || !user) return;
+    const isProvider = user.role === 'professional' && request.providerId === user.id;
+    const released = String((request as any).escrowStatus || '') === 'released' || request.status === 'completed';
+    if (isProvider && released && !(request as any).clientReviewedAt) {
+      setClientReviewOpen(true);
+    }
+  }, [request?.id, (request as any)?.escrowStatus, request?.status, (request as any)?.clientReviewedAt, user?.id]);
 
   const status = (request as any)?.status || 'pending';
   const isPaid = String((request as any)?.paymentStatus || '') === 'succeeded' || !!(request as any)?.paidAt;
@@ -245,6 +284,30 @@ export default function RequestDetailsScreen() {
     );
   };
 
+  const handleSubmitClientReview = async (args: { polite: boolean; changedScope: boolean; comment?: string }) => {
+    if (!user) return;
+    setSubmittingClientReview(true);
+    try {
+      toast.loading('Enviando avaliação...');
+      await submitClientReview({
+        requestId: request.id,
+        providerId: request.providerId,
+        clientId: request.clientId,
+        providerAvatarUrl: (user as any)?.avatar || null,
+        polite: args.polite,
+        changedScope: args.changedScope,
+        comment: args.comment,
+      });
+      toast.success('Cliente avaliado!');
+      setClientReviewOpen(false);
+      fetchRequests(user.id).catch(() => {});
+    } catch (e: any) {
+      toast.error(e?.message || 'Não foi possível enviar a avaliação.');
+    } finally {
+      setSubmittingClientReview(false);
+    }
+  };
+
   const handleCancel = async () => {
     Alert.alert('Cancelar pedido', 'Deseja cancelar este pedido? Ele vai sair da lista principal e ficar no histórico.', [
       { text: 'Voltar', style: 'cancel' },
@@ -353,6 +416,21 @@ export default function RequestDetailsScreen() {
               <View className="flex-1">
                 <Text className="text-[12px] text-gray-500">Cliente</Text>
                 <Text className="mt-1 text-[14px] font-bold text-gray-900">{request.clientName}</Text>
+                {isProviderOwner ? (
+                  <View className="mt-1 flex-row items-center gap-0.5">
+                    {[1, 2, 3, 4, 5].map((s) => (
+                      <Ionicons
+                        key={s}
+                        name={s <= Math.round(clientRating.avg) ? 'star' : 'star-outline'}
+                        size={12}
+                        color={s <= Math.round(clientRating.avg) ? '#FBBF24' : '#D1D5DB'}
+                      />
+                    ))}
+                    <Text className="ml-1 text-[10px] font-bold text-gray-400">
+                      {clientRating.count ? `${clientRating.avg.toFixed(1)} (${clientRating.count})` : 'novo'}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
               <View className="items-end">
                 <Text className="text-[12px] text-gray-500">Estado</Text>
@@ -545,6 +623,28 @@ export default function RequestDetailsScreen() {
             </View>
           ) : null}
 
+          {/* Prestador: avaliar o cliente (após o serviço ser concluído) */}
+          {isProviderOwner && isReleased && !(request as any).clientReviewedAt ? (
+            <View className="mt-4">
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => setClientReviewOpen(true)}
+                className="h-13 flex-row items-center justify-center gap-2 rounded-full bg-brand-cyan"
+                style={{ height: 52 }}
+              >
+                <Ionicons name="star" size={16} color="#fff" />
+                <Text className="text-[14px] font-extrabold text-white">Avaliar cliente</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {isProviderOwner && isReleased && !!(request as any).clientReviewedAt ? (
+            <View className="mt-4 flex-row items-center justify-center gap-1.5 rounded-2xl bg-emerald-50 py-3">
+              <Ionicons name="checkmark-circle" size={15} color="#059669" />
+              <Text className="text-[12px] font-bold text-emerald-700">Você já avaliou este cliente.</Text>
+            </View>
+          ) : null}
+
           {/* Ações do prestador: aceitar/rejeitar */}
           {user?.role === 'professional' && status === 'pending' ? (
             <View className="mt-5 flex-row gap-3">
@@ -603,6 +703,15 @@ export default function RequestDetailsScreen() {
         processing={paying}
         onClose={() => (paying ? null : setPayOpen(false))}
         onConfirm={handlePay}
+      />
+
+      <ClientReviewModal
+        visible={clientReviewOpen}
+        clientName={request.clientName}
+        serviceName={request.serviceName}
+        processing={submittingClientReview}
+        onClose={() => (submittingClientReview ? null : setClientReviewOpen(false))}
+        onSubmit={handleSubmitClientReview}
       />
     </View>
   );

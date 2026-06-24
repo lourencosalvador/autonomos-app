@@ -6,7 +6,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Image, ImageBackground, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import IconHartCyan from '../../../assets/icons/hart-cyan.svg';
-import IconNotification from '../../../assets/icons/ICON NOTIFICATION.svg';
+import { HomeHeader } from '../../components/HomeHeader';
+import { PendingReview } from '../../components/PendingReview';
 import IconClock from '../../../assets/icons/icon-clock-new.svg';
 import IconEdit from '../../../assets/icons/icon-edit.svg';
 import IconRowView from '../../../assets/icons/row-view.svg';
@@ -38,13 +39,21 @@ export default function HomeScreen() {
   const router = useRouter();
 
   if (user?.role === 'professional') {
+    // Prestador ainda não aprovado: home mostra o estado "em análise".
+    if (user.approvalStatus === 'pending' || user.approvalStatus === 'rejected') {
+      return <PendingReview />;
+    }
     return <ProfessionalDashboard firstName={firstName} />;
   }
 
   return <ClientHome firstName={firstName} onSeeAll={() => router.push('/all-services')} />;
 }
 
+// Mostra a intro de onboarding do prestador só uma vez por sessão.
+let onboardingPrompted = false;
+
 function ClientHome({ firstName, onSeeAll }: { firstName: string; onSeeAll: () => void }) {
+  const router = useRouter();
   const [selectedId, setSelectedId] = useState<CategoryId>('casa');
 
   const getContent = () => {
@@ -77,43 +86,43 @@ function ClientHome({ firstName, onSeeAll }: { firstName: string; onSeeAll: () =
   return (
     <View className="flex-1 bg-white">
       <StatusBar style="dark" />
+      <LinearGradient
+        colors={['#A7E8F3', '#E4F8FB', '#FFFFFF']}
+        locations={[0, 0.55, 1]}
+        pointerEvents="none"
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 360 }}
+      />
 
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
         <View className="px-4 pt-20 mb-8">
-          <View className="mb-6 flex-row items-start justify-between">
-            <View className="flex-1">
-              <Text className="text-[28px] font-bold text-gray-900">
-                Olá, {firstName}
-              </Text>
-              <Text className="mt-1 text-[15px] text-gray-500 font-bold">
-                Bem vindo de volta!
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              className="relative w-12 h-12 items-center justify-center"
-              activeOpacity={0.7}
-            >
-              <View className='absolute top-1 right-3 h-3 w-3 rounded-full bg-brand-cyan z-40' />
-              <IconNotification width={94} height={94} />
-            </TouchableOpacity>
+          <View className="mb-6">
+            <HomeHeader
+              firstName={firstName}
+              onNotificationPress={() => router.push('/notificacoes')}
+              onAvatarPress={() => router.push('/(tabs)/profile')}
+            />
           </View>
 
-          <View className="mb-6 flex-row items-center rounded-full bg-[#D9D9D966] px-2 py-2">
+          <View className="mb-6 flex-row items-center rounded-full bg-white px-2 py-2">
             <TextInput
               className="flex-1 text-[15px] text-gray-700 pl-4"
               placeholder="Pesquisar"
               placeholderTextColor="#9CA3AF"
             />
-            <View className='p-4 flex justify-center items-center rounded-full bg-white'>
-              <Ionicons name="search" size={22} color="#9CA3AF" />
+            <View className="p-4 flex justify-center items-center rounded-full" style={{ backgroundColor: '#00E7FF' }}>
+              <Ionicons name="search" size={22} color="#FFFFFF" />
             </View>
+          </View>
+
+          <View className="mb-3 flex-row items-center justify-between">
+            <Text className="text-[17px] font-extrabold text-gray-900">Categorias</Text>
+            <Text className="text-[12px] font-bold text-gray-400">Explore por área</Text>
           </View>
 
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 16 }}
+            contentContainerStyle={{ gap: 16, paddingVertical: 6, paddingRight: 8 }}
           >
             {categories.map((category, index) => {
               const isActive = selectedId === category.id;
@@ -121,17 +130,32 @@ function ClientHome({ firstName, onSeeAll }: { firstName: string; onSeeAll: () =
                 <TouchableOpacity
                   key={category.id}
                   className="items-center"
-                  activeOpacity={0.7}
+                  activeOpacity={0.85}
                   onPress={() => setSelectedId(categories[index].id as CategoryId)}
+                  style={{ width: 68 }}
                 >
-                  <View className="mb-2 h-20 w-20 items-center justify-center rounded-full border-[3px] border-brand-cyan/30 bg-[]" style={{ backgroundColor: isActive ? '#FFFF' : '#f3f4f6', borderColor: isActive ? '#00E7FF' : '#00E7FF' }}>
-                    <category.Icon
-                      size={32}
-                      color={isActive ? '#00E7FF' : '#99999991'}
-                      strokeWidth={category.stroke}
-                    />
+                  <View
+                    className="mb-2 h-[64px] w-[64px] items-center justify-center rounded-[22px]"
+                    style={
+                      isActive
+                        ? {
+                            backgroundColor: '#00E7FF',
+                            shadowColor: '#00E7FF',
+                            shadowOpacity: 0.3,
+                            shadowRadius: 22,
+                            shadowOffset: { width: 0, height: 10 },
+                            elevation: 8,
+                          }
+                        : { backgroundColor: '#F4F6F8' }
+                    }
+                  >
+                    <category.Icon size={28} color={isActive ? '#FFFFFF' : '#9CA3AF'} strokeWidth={category.stroke} />
                   </View>
-                  <Text className="text-[12px] text-[#99999999]">
+                  <Text
+                    className="text-[11.5px]"
+                    numberOfLines={1}
+                    style={{ color: isActive ? '#0F172A' : '#9CA3AF', fontWeight: isActive ? '800' : '600' }}
+                  >
                     {category.name}
                   </Text>
                 </TouchableOpacity>
@@ -156,6 +180,16 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
   const [reviewsLoading, setReviewsLoading] = useState(true);
   const [walletBalance, setWalletBalance] = useState(0);
   const [walletCurrency, setWalletCurrency] = useState('USD');
+
+  // Onboarding: leva o prestador novo (perfil incompleto) para configurar o perfil.
+  // Só dispara quando a coluna existe e está explicitamente false (migração rodada).
+  useEffect(() => {
+    if (!user || user.role !== 'professional') return;
+    if (user.onboardingCompleted !== false) return;
+    if (onboardingPrompted) return;
+    onboardingPrompted = true;
+    router.push('/bem-vindo-prestador');
+  }, [user?.id, user?.onboardingCompleted]);
 
   useEffect(() => {
     load();
@@ -277,24 +311,20 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
   return (
     <View className="flex-1 bg-white">
       <StatusBar style="dark" />
+      <LinearGradient
+        colors={['#A7E8F3', '#E4F8FB', '#FFFFFF']}
+        locations={[0, 0.55, 1]}
+        pointerEvents="none"
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 360 }}
+      />
 
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
         <View className="px-6 pt-20">
-          <View className="flex-row items-start justify-between">
-            <View className="flex-1">
-              <Text className="text-[28px] font-bold text-gray-900">Olá, {firstName}</Text>
-              <Text className="mt-1 text-[15px] text-gray-500 font-bold">Bem vindo de volta!</Text>
-            </View>
-
-            <TouchableOpacity
-              className="relative w-12 h-12 items-center justify-center"
-              activeOpacity={0.7}
-              onPress={() => router.push('/notificacoes')}
-            >
-              <View className="absolute top-1 right-3 h-3 w-3 rounded-full bg-brand-cyan z-40" />
-              <IconNotification width={94} height={94} />
-            </TouchableOpacity>
-          </View>
+          <HomeHeader
+            firstName={firstName}
+            onNotificationPress={() => router.push('/notificacoes')}
+            onAvatarPress={() => router.push('/(tabs)/profile')}
+          />
 
           <TouchableOpacity
             activeOpacity={0.9}

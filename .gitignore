@@ -42,3 +42,7 @@ yarn-error.*
 /ios
 /android
 .env # Ignora para sempre
+
+# rascunhos / artefactos (proposta de orçamento)
+build_proposta.py
+*.xlsx

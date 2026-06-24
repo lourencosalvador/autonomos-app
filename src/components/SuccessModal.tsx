@@ -2,6 +2,7 @@ import LottieView from 'lottie-react-native';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import { Modal, Text, TouchableOpacity, View } from 'react-native';
+import { haptics } from '../lib/haptics';
 
 interface SuccessModalProps {
   visible: boolean;
@@ -25,6 +26,7 @@ export function SuccessModal({
 
   useEffect(() => {
     if (visible) {
+      haptics.success();
       animationRef.current?.play();
     }
   }, [visible]);
