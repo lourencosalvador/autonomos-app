@@ -11,6 +11,7 @@ import { stripeCreatePaymentIntentRoute } from './routes/stripe-create-payment-i
 import { stripeWebhookRoute } from './routes/stripe-webhook.js';
 import { escrowReleaseRoute } from './routes/escrow-release.js';
 import { withdrawalRequestRoute } from './routes/withdrawal-request.js';
+import { adminApplicationsRoute, adminDashboardRoute, adminDecisionRoute, adminLoginRoute } from './routes/admin.js';
 import { verifyOTPRoute } from './routes/verify-otp.js';
 
 const app = express();
@@ -45,6 +46,12 @@ app.post('/api/stripe/confirm', stripeConfirmPaymentRoute);
 app.post('/api/stripe/connect/onboard', stripeConnectOnboardRoute);
 app.post('/api/escrow/release', escrowReleaseRoute);
 app.post('/api/withdrawals/request', withdrawalRequestRoute);
+
+// Painel de aprovações (web)
+app.get('/admin', adminDashboardRoute);
+app.post('/api/admin/login', adminLoginRoute);
+app.get('/api/admin/applications', adminApplicationsRoute);
+app.post('/api/admin/decision', adminDecisionRoute);
 
 app.listen(Number(PORT), HOST, () => {
   console.log(`🚀 Servidor rodando em http://${HOST}:${PORT}`);
