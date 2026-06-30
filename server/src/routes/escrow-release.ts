@@ -40,19 +40,27 @@ export async function escrowReleaseRoute(req: Request, res: Response) {
     }
 
     const alreadyReleased = String((requestRow as any).escrow_status || '') === 'released';
-    const releasedAt = (requestRow as any).released_at || new Date().toISOString();
 
-    // Atualiza o pedido: liberado + concluído
-    const { error: upReqErr } = await supabaseAdmin
-      .from('requests')
-      .update({ escrow_status: 'released', released_at: releasedAt, status: 'completed', completed_at: releasedAt } as any)
-      .eq('id', requestId);
+    // Serviço de vários dias: só pode concluir depois da parcela final (70%) ser paga.
+    const isMultiDay = (requestRow as any).is_multi_day === true;
+    if (isMultiDay && !alreadyReleased && Number((requestRow as any).installments_paid ?? 0) < 2) {
+      return badRequest(res, 'Pague a parcela final (70%) antes de concluir o serviço.');
+    }
+
+    const releasedAt = (requestRow as any).released_at || new Date().toISOString();
+    const providerNet = Number((requestRow as any).provider_net ?? 0);
+
+    // Atualiza o pedido: liberado + concluído. Em vários dias, move o retido (70%) para liberado.
+    const releasePatch: any = { escrow_status: 'released', released_at: releasedAt, status: 'completed', completed_at: releasedAt };
+    if (isMultiDay) {
+      releasePatch.provider_released_amount = providerNet; // tudo liberado
+      releasePatch.provider_held_amount = 0;
+    }
+    const { error: upReqErr } = await supabaseAdmin.from('requests').update(releasePatch).eq('id', requestId);
     if (upReqErr) {
       // fallback sem completed_at (caso a coluna não exista)
-      await supabaseAdmin
-        .from('requests')
-        .update({ escrow_status: 'released', released_at: releasedAt, status: 'completed' } as any)
-        .eq('id', requestId);
+      delete releasePatch.completed_at;
+      await supabaseAdmin.from('requests').update(releasePatch).eq('id', requestId);
     }
 
     // Atualiza o pagamento correspondente

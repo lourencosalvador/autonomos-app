@@ -41,3 +41,39 @@ export function computeFees(agreed: number, isUrgent = false): FeeBreakdown {
 
   return { agreed: a, isUrgent, requestFee, serviceFee, urgentBonus, clientTotal, providerNet, platformNet };
 }
+
+// ── Serviço de vários dias (FlexPay 30/70) — espelho de src/lib/pricing.ts ──
+export const MULTI_DAY_FIRST_RATE = 0.3; // 30% no arranque (liberado de imediato)
+export const MULTI_DAY_FINAL_RATE = 0.7; // 70% na parcela final (retido até concluir)
+
+export type InstallmentPlan = {
+  isMultiDay: boolean;
+  installmentsTotal: number;
+  firstClientAmount: number;
+  finalClientAmount: number;
+  firstProviderNet: number;
+  finalProviderNet: number;
+};
+
+export function computeInstallments(fees: FeeBreakdown, isMultiDay: boolean): InstallmentPlan {
+  if (!isMultiDay) {
+    return {
+      isMultiDay: false,
+      installmentsTotal: 1,
+      firstClientAmount: fees.clientTotal,
+      finalClientAmount: 0,
+      firstProviderNet: fees.providerNet,
+      finalProviderNet: 0,
+    };
+  }
+  const firstClientAmount = round(fees.clientTotal * MULTI_DAY_FIRST_RATE);
+  const firstProviderNet = round(fees.providerNet * MULTI_DAY_FIRST_RATE);
+  return {
+    isMultiDay: true,
+    installmentsTotal: 2,
+    firstClientAmount,
+    finalClientAmount: fees.clientTotal - firstClientAmount,
+    firstProviderNet,
+    finalProviderNet: fees.providerNet - firstProviderNet,
+  };
+}

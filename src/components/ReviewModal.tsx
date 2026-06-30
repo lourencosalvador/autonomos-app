@@ -36,7 +36,7 @@ export function ReviewModal({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable className="flex-1 bg-black/50 items-center justify-center px-6" onPress={Keyboard.dismiss}>
-        <Pressable className="w-full rounded-3xl bg-white px-5 py-5" onPress={() => {}}>
+        <Pressable className="w-full rounded-3xl bg-white px-5 py-5" onPress={() => Keyboard.dismiss()}>
           <View className="flex-row items-center justify-between">
             <Text className="text-[16px] font-extrabold text-gray-900">Avaliar prestador</Text>
             <TouchableOpacity onPress={onClose} activeOpacity={0.8} className="h-10 w-10 items-center justify-center">

@@ -3,17 +3,18 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Check, Clock, Loader2, Lock, X, Zap } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useRequestsStore } from '../stores/requestsStore';
 import { toast } from '../lib/sonner';
 import { useAuthStore } from '../stores/authStore';
-import { useStreamStore } from '../stores/streamStore';
 import { SetPriceModal } from '../components/SetPriceModal';
-import { confirmStripePayment, createStripePaymentIntent, getBackendHealth } from '../services/apiService';
+import { confirmStripePayment, createGpayPayment, createStripePaymentIntent, getBackendHealth } from '../services/apiService';
+import type { PaymentMethod } from '../components/PaymentBreakdownSheet';
 import { useStripe } from '@stripe/stripe-react-native';
 import { PaymentBreakdownSheet } from '../components/PaymentBreakdownSheet';
 import { ClientReviewModal } from '../components/ClientReviewModal';
-import { computeFees, formatMoney } from '../lib/pricing';
+import { CancelReasonModal } from '../components/CancelReasonModal';
+import { computeFees, computeInstallments, formatMoney } from '../lib/pricing';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import * as Linking from 'expo-linking';
 
@@ -50,7 +51,6 @@ export default function RequestDetailsScreen() {
   const requestId = (params.requestId || '').toString();
 
   const { user } = useAuthStore();
-  const streamReady = useStreamStore((s) => s.ready);
   const request = useRequestsStore((s) => s.requests.find((r) => r.id === requestId));
   const setRequestStatus = useRequestsStore((s) => s.setRequestStatus);
   const setRequestPrice = useRequestsStore((s) => s.setRequestPrice);
@@ -67,6 +67,8 @@ export default function RequestDetailsScreen() {
   const [clientReviewOpen, setClientReviewOpen] = useState(false);
   const [submittingClientReview, setSubmittingClientReview] = useState(false);
   const [clientRating, setClientRating] = useState<{ avg: number; count: number }>({ avg: 0, count: 0 });
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const stripe = useStripe();
 
   // O backend no Render (free) hiberna após inatividade. Acordamos assim que o pedido abre,
@@ -114,8 +116,31 @@ export default function RequestDetailsScreen() {
   const isHeld = isPaid && !isReleased;
   const escrowState: 'none' | 'held' | 'released' = isReleased ? 'released' : isHeld ? 'held' : 'none';
 
+  // Serviço de vários dias (FlexPay 30/70)
+  const isMultiDay = !!(request as any)?.isMultiDay;
+  const installmentsPaid = Number((request as any)?.installmentsPaid ?? 0);
+  const installmentsTotal = isMultiDay ? 2 : 1;
+  // Falta pagar a parcela final (70%)? Só faz sentido depois da 1ª parcela e antes de concluir.
+  const needsFinalInstallment = isMultiDay && isHeld && installmentsPaid < installmentsTotal;
+  // "Serviço concluído" só liberta quando todas as parcelas estiverem pagas.
+  const canComplete = isHeld && (!isMultiDay || installmentsPaid >= installmentsTotal);
+
   const ui = useMemo(() => (request ? statusUi(status) : null), [request, status]);
   const esc = useMemo(() => escrowUi(escrowState), [escrowState]);
+
+  // Com quem conversar: o cliente fala com o prestador e o prestador com o cliente.
+  const chatPeer = useMemo(() => {
+    if (!request || !user) return null;
+    const isProvider = user.role === 'professional' && request.providerId === user.id;
+    return isProvider
+      ? { id: request.clientId, name: request.clientName }
+      : { id: request.providerId, name: request.providerName };
+  }, [request, user]);
+
+  const openChat = () => {
+    if (!chatPeer?.id) return toast.error('Conversa indisponível para este pedido.');
+    router.push({ pathname: '/chat', params: { otherUserId: chatPeer.id, otherUserName: chatPeer.name } });
+  };
 
   if (!request) {
     return (
@@ -145,9 +170,110 @@ export default function RequestDetailsScreen() {
   const fees = useMemo(() => computeFees(agreed, isUrgent), [agreed, isUrgent]);
   const clientTotal = Number((request as any).clientTotal || 0) || fees.clientTotal;
   const providerNet = Number((request as any).providerNet || 0) || fees.providerNet;
+  // Plano de parcelas (vários dias = 30/70). Para serviço normal é uma parcela só.
+  const plan = useMemo(() => computeInstallments(fees, isMultiDay), [fees, isMultiDay]);
 
-  const handlePay = async (opts: { isUrgent: boolean }) => {
+  // Aguarda a confirmação do pagamento via Realtime (webhook → Supabase → push imediato).
+  // `isDone` decide quando a parcela em causa está confirmada (parcela 1 vs. parcela final).
+  const waitForPayment = (id: string, timeoutMs: number, isDone: (row: any) => boolean): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        supabase.removeChannel(channel);
+        resolve(false);
+      }, timeoutMs);
+
+      const channel = supabase
+        .channel(`payment-${id}-${Date.now()}`)
+        .on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'requests', filter: `id=eq.${id}` },
+          (payload) => {
+            if (isDone(payload.new as any)) {
+              clearTimeout(timer);
+              supabase.removeChannel(channel);
+              resolve(true);
+            }
+          }
+        )
+        .subscribe();
+    });
+  };
+
+  // Pagamento via GPay: 'multicaixa' (push ao telemóvel) ou 'reference' (número de referência).
+  const payWithGpay = async (opts: { isUrgent: boolean; method: 'multicaixa' | 'reference'; phone?: string }) => {
     if (!user) return;
+    const phone = String(opts.phone || '').replace(/[^\d]/g, '');
+    if (phone.length < 9) {
+      toast.error('Número de telemóvel inválido.');
+      return;
+    }
+    setPaying(true);
+    try {
+      toast.loading(opts.method === 'reference' ? 'A gerar referência...' : 'A enviar pedido para o Multicaixa Express...');
+      const r = await createGpayPayment({
+        requestId: request.id,
+        clientId: user.id,
+        method: opts.method,
+        phone,
+        name: user.name,
+        email: (user as any).email || '',
+        isUrgent: opts.isUrgent,
+      });
+
+      if (opts.method === 'reference') {
+        // Pago externamente (ATM/banco). Mostra a referência; o webhook confirma depois.
+        setPayOpen(false);
+        const lines = [
+          r.entity ? `Entidade: ${r.entity}` : null,
+          r.referenceNumber ? `Referência: ${r.referenceNumber}` : 'Referência gerada.',
+          `Valor: ${r.amount} Kz`,
+        ]
+          .filter(Boolean)
+          .join('\n');
+        Alert.alert(
+          'Referência de pagamento',
+          `${lines}\n\nPague num ATM, Multicaixa ou app do banco. O pedido confirma automaticamente após o pagamento.`
+        );
+        fetchRequests(user.id).catch(() => {});
+        return;
+      }
+
+      // Multicaixa Express: o cliente confirma no telemóvel → webhook → Realtime.
+      toast.success('Confirme o pagamento na app Multicaixa Express 📲');
+      // Para vários dias, esperamos a parcela em causa (a 1ª já deixa payment_status=succeeded).
+      const targetInstallment = isMultiDay ? installmentsPaid + 1 : 1;
+      const isDone = (row: any) =>
+        isMultiDay
+          ? Number(row?.installments_paid ?? 0) >= targetInstallment
+          : row?.payment_status === 'succeeded' || row?.escrow_status === 'held';
+      const ok = await waitForPayment(request.id, 60000, isDone);
+      if (ok) {
+        setPayOpen(false);
+        const finalPaid = isMultiDay && targetInstallment >= installmentsTotal;
+        toast.success(
+          isMultiDay
+            ? finalPaid
+              ? 'Parcela final paga e retida 🔒'
+              : 'Entrada de 30% paga e enviada ao prestador ✅'
+            : 'Pagamento confirmado e retido 🔒'
+        );
+      } else {
+        toast('Aguardando a confirmação no Multicaixa Express. O pedido atualiza assim que confirmares.');
+      }
+      fetchRequests(user.id).catch(() => {});
+    } catch (e: any) {
+      toast.error(e?.message || 'Não foi possível iniciar o pagamento.');
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  const handlePay = async (opts: { isUrgent: boolean; method?: PaymentMethod; phone?: string }) => {
+    if (!user) return;
+    if (opts.method === 'multicaixa' || opts.method === 'reference') {
+      await payWithGpay({ isUrgent: opts.isUrgent, method: opts.method, phone: opts.phone });
+      return;
+    }
     if (!stripe) {
       toast.error('Stripe não está disponível.');
       return;
@@ -178,8 +304,17 @@ export default function RequestDetailsScreen() {
         // não bloqueia
       }
 
+      // Vários dias: o cartão também paga por parcela (30% ou 70%).
+      const targetInstallment = isMultiDay ? installmentsPaid + 1 : 1;
+      const payPlan = computeInstallments(computeFees(agreed, opts.isUrgent), isMultiDay);
+
       toast.loading('Preparando pagamento seguro...');
-      const resp = await createStripePaymentIntent({ requestId: request.id, clientId: user.id, isUrgent: opts.isUrgent });
+      const resp = await createStripePaymentIntent({
+        requestId: request.id,
+        clientId: user.id,
+        isUrgent: opts.isUrgent,
+        installment: targetInstallment,
+      });
       const serverModeFromPI = resp?.stripeMode || 'unknown';
       if (serverModeFromPI !== 'unknown' && serverModeFromPI !== pkMode) {
         setPaying(false);
@@ -235,10 +370,25 @@ export default function RequestDetailsScreen() {
               platformNet: resp.fees.platformNet,
             }
           : null,
+        // Vários dias: grava a parcela paga + split (30% liberado / 70% retido).
+        multiDay: isMultiDay
+          ? {
+              installmentsPaid: targetInstallment,
+              providerReleasedAmount: payPlan.firstProviderNet,
+              providerHeldAmount: targetInstallment >= installmentsTotal ? payPlan.finalProviderNet : null,
+            }
+          : null,
       });
 
       setPayOpen(false);
-      toast.success('Pagamento retido com segurança 🔒');
+      const finalPaidCard = isMultiDay && targetInstallment >= installmentsTotal;
+      toast.success(
+        isMultiDay
+          ? finalPaidCard
+            ? 'Parcela final paga e retida 🔒'
+            : 'Entrada de 30% paga e enviada ao prestador ✅'
+          : 'Pagamento retido com segurança 🔒'
+      );
       fetchRequests(user.id).catch(() => {});
     } catch (e: any) {
       toast.error(e?.message || 'Não foi possível concluir o pagamento.');
@@ -248,6 +398,11 @@ export default function RequestDetailsScreen() {
   };
 
   const handleRelease = () => {
+    // Vários dias: não deixa concluir antes de a parcela final (70%) estar paga.
+    if (!canComplete) {
+      toast.error('Pague a parcela final (70%) antes de concluir o serviço.');
+      return;
+    }
     Alert.alert(
       'Confirmar conclusão',
       'Confirma que o serviço foi concluído? O valor retido será liberado para o prestador e não poderá ser revertido pelo app.',
@@ -308,48 +463,47 @@ export default function RequestDetailsScreen() {
     }
   };
 
-  const handleCancel = async () => {
-    Alert.alert('Cancelar pedido', 'Deseja cancelar este pedido? Ele vai sair da lista principal e ficar no histórico.', [
-      { text: 'Voltar', style: 'cancel' },
-      {
-        text: 'Cancelar pedido',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            toast.loading('Cancelando...');
-            await cancelRequest(request.id);
-            toast.success('Pedido cancelado.');
-            router.back();
-          } catch (e: any) {
-            toast.error(e?.message || 'Não foi possível cancelar o pedido.');
-          }
-        },
-      },
-    ]);
+  // Cancelamento com motivo (modal). Lista de motivos muda conforme cliente/prestador.
+  const confirmCancel = async (reason: string) => {
+    setCancelling(true);
+    try {
+      toast.loading('A cancelar...');
+      await cancelRequest(request.id, { reason, by: isProviderOwner ? 'provider' : 'client' });
+      toast.success('Pedido cancelado.');
+      setCancelOpen(false);
+      router.back();
+    } catch (e: any) {
+      toast.error(e?.message || 'Não foi possível cancelar o pedido.');
+    } finally {
+      setCancelling(false);
+    }
   };
 
-  const handleAccept = async () => {
+  // Catálogo (já tem preço): aceita direto, sem modal. Fica no detalhe.
+  const handleAcceptDirect = async () => {
     try {
-      toast.loading('Atualizando...');
+      toast.loading('Aceitando...');
       await setRequestStatus(request.id, 'accepted');
       toast.success('Pedido aceite.');
-      if (streamReady && user?.role === 'professional') {
-        const template =
-          (user as any)?.autoAcceptMessage?.trim() ||
-          'Olá {{cliente}}, aceitei o seu pedido de {{servico}}. Vamos combinar os detalhes por aqui?';
-        const msg = template
-          .replace(/\{\{\s*cliente\s*\}\}/gi, request.clientName)
-          .replace(/\{\{\s*servico\s*\}\}/gi, request.serviceName);
-        router.push({
-          pathname: '/chat',
-          params: { otherUserId: request.clientId, otherUserName: request.clientName, initialMessage: msg, sendKey: request.id },
-        });
-        return;
-      }
-      router.back();
+      if (user?.id) fetchRequests(user.id).catch(() => {});
     } catch {
       toast.error('Não foi possível aceitar o pedido.');
     }
+  };
+
+  // Personalizado (sem preço): abre o modal de preço; ao guardar, define o preço e aceita.
+  const handleAcceptWithPrice = async ({ priceAmount, currency }: { priceAmount: number; currency: string }) => {
+    await setRequestPrice({ id: request.id, priceAmount, currency });
+    if (status === 'pending') {
+      await setRequestStatus(request.id, 'accepted');
+    }
+    if (user?.id) fetchRequests(user.id).catch(() => {});
+  };
+
+  // Ao tocar em "Aceitar": catálogo → direto; personalizado → modal de preço.
+  const onAcceptPress = () => {
+    if (hasPrice) handleAcceptDirect();
+    else setPriceModalOpen(true);
   };
 
   const handleReject = async () => {
@@ -383,6 +537,7 @@ export default function RequestDetailsScreen() {
   };
 
   return (
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
     <View className="flex-1 bg-white">
       <StatusBar style="dark" />
 
@@ -392,14 +547,40 @@ export default function RequestDetailsScreen() {
             <Ionicons name="arrow-back" size={24} color="#1F2937" />
           </TouchableOpacity>
           <Text className="flex-1 ml-2 text-[22px] font-bold text-gray-900">Detalhe do Pedido</Text>
+          <TouchableOpacity onPress={openChat} className="h-10 w-10 items-center justify-center" activeOpacity={0.7}>
+            <Ionicons name="chatbubble-ellipses-outline" size={22} color="#00A9BA" />
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleDelete} className="h-10 w-10 items-center justify-center" activeOpacity={0.7}>
             <Ionicons name="trash-outline" size={22} color="#EF4444" />
           </TouchableOpacity>
         </View>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ paddingBottom: 40 }}
+      >
         <View className="px-6">
+          {isMultiDay ? (
+            <View className="mb-4 rounded-2xl bg-amber-50 px-4 py-3.5" style={{ borderWidth: 1, borderColor: '#FDE68A' }}>
+              <View className="flex-row items-center gap-2">
+                <Ionicons name="calendar" size={16} color="#D97706" />
+                <Text className="text-[13px] font-extrabold text-amber-800">Serviço de vários dias</Text>
+                <View className="ml-auto rounded-full bg-amber-100 px-2.5 py-0.5">
+                  <Text className="text-[10.5px] font-extrabold text-amber-700">
+                    {Math.min(installmentsPaid, installmentsTotal)}/{installmentsTotal} parcelas
+                  </Text>
+                </View>
+              </View>
+              <Text className="mt-2 text-[11.5px] leading-4 font-bold text-amber-800/90">
+                {isProviderOwner
+                  ? 'Pagamento em 2 partes: recebes 30% assim que o cliente pagar a 1ª parte (já sacável) e os 70% finais quando ele confirmar a conclusão.'
+                  : 'Pagamento em 2 partes: 30% entregues ao prestador no arranque e 70% libertados quando confirmares que o serviço foi concluído.'}
+              </Text>
+            </View>
+          ) : null}
           <View className="rounded-3xl bg-gray-100 px-5 py-5">
             <View className="flex-row items-center justify-between">
               <Text className="text-[12px] text-gray-500">Serviço</Text>
@@ -470,7 +651,23 @@ export default function RequestDetailsScreen() {
             </View>
           </View>
 
-          {/* Bloco de pagamento (escrow) */}
+          {/* Conversar com a outra parte */}
+          {chatPeer?.id ? (
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={openChat}
+              className="mt-4 h-13 flex-row items-center justify-center gap-2 rounded-full"
+              style={{ height: 52, borderWidth: 1.5, borderColor: '#00E7FF' }}
+            >
+              <Ionicons name="chatbubble-ellipses-outline" size={18} color="#00A9BA" />
+              <Text className="text-[14px] font-extrabold text-cyan-700">
+                {isProviderOwner ? 'Conversar com o cliente' : 'Conversar com o prestador'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+
+          {/* Bloco de pagamento — mostra a quebra de preço sempre que há valor definido. */}
+          {hasPrice && status !== 'rejected' && status !== 'cancelled' ? (
           <View className="mt-4 rounded-3xl bg-white px-5 py-5" style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
             <View className="flex-row items-center justify-between">
               <View className="flex-row items-center gap-2">
@@ -485,51 +682,47 @@ export default function RequestDetailsScreen() {
               </View>
             </View>
 
-            {!hasPrice ? (
-              <Text className="mt-3 text-[13px] font-bold text-gray-400">Preço ainda não definido pelo prestador.</Text>
-            ) : (
-              <View className="mt-3">
-                <View className="flex-row items-center justify-between py-1">
-                  <Text className="text-[12.5px] font-bold text-gray-500">Valor do serviço</Text>
-                  <Text className="text-[12.5px] font-bold text-gray-700">{formatMoney(agreed, currency)}</Text>
-                </View>
-
-                {/* Cliente vê o total que paga; prestador vê o líquido que recebe */}
-                {isClientOwner ? (
-                  <>
-                    <View className="flex-row items-center justify-between py-1">
-                      <Text className="text-[12.5px] font-bold text-gray-500">
-                        Taxa de solicitação ({isUrgent ? '20' : '10'}%)
-                      </Text>
-                      <Text className="text-[12.5px] font-bold text-gray-700">+ {formatMoney(fees.requestFee, currency)}</Text>
-                    </View>
-                    <View className="my-2 h-px bg-gray-100" />
-                    <View className="flex-row items-center justify-between">
-                      <Text className="text-[13px] font-extrabold text-gray-900">{isPaid ? 'Total pago' : 'Total a pagar'}</Text>
-                      <Text className="text-[16px] font-extrabold text-gray-900">{formatMoney(clientTotal, currency)}</Text>
-                    </View>
-                  </>
-                ) : (
-                  <>
-                    <View className="flex-row items-center justify-between py-1">
-                      <Text className="text-[12.5px] font-bold text-gray-500">Taxa de serviço (10%)</Text>
-                      <Text className="text-[12.5px] font-bold text-gray-700">- {formatMoney(fees.serviceFee, currency)}</Text>
-                    </View>
-                    {isUrgent ? (
-                      <View className="flex-row items-center justify-between py-1">
-                        <Text className="text-[12.5px] font-bold text-gray-500">Bônus de urgência (5%)</Text>
-                        <Text className="text-[12.5px] font-bold text-emerald-600">+ {formatMoney(fees.urgentBonus, currency)}</Text>
-                      </View>
-                    ) : null}
-                    <View className="my-2 h-px bg-gray-100" />
-                    <View className="flex-row items-center justify-between">
-                      <Text className="text-[13px] font-extrabold text-gray-900">Você recebe</Text>
-                      <Text className="text-[16px] font-extrabold text-gray-900">{formatMoney(providerNet, currency)}</Text>
-                    </View>
-                  </>
-                )}
+            <View className="mt-3">
+              <View className="flex-row items-center justify-between py-1">
+                <Text className="text-[12.5px] font-bold text-gray-500">Valor do serviço</Text>
+                <Text className="text-[12.5px] font-bold text-gray-700">{formatMoney(agreed, currency)}</Text>
               </View>
-            )}
+
+              {/* Cliente vê o total que paga; prestador vê o líquido que recebe */}
+              {isClientOwner ? (
+                <>
+                  <View className="flex-row items-center justify-between py-1">
+                    <Text className="text-[12.5px] font-bold text-gray-500">
+                      Taxa de solicitação ({isUrgent ? '20' : '10'}%)
+                    </Text>
+                    <Text className="text-[12.5px] font-bold text-gray-700">+ {formatMoney(fees.requestFee, currency)}</Text>
+                  </View>
+                  <View className="my-2 h-px bg-gray-100" />
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-[13px] font-extrabold text-gray-900">{isPaid ? 'Total pago' : 'Total a pagar'}</Text>
+                    <Text className="text-[16px] font-extrabold text-gray-900">{formatMoney(clientTotal, currency)}</Text>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View className="flex-row items-center justify-between py-1">
+                    <Text className="text-[12.5px] font-bold text-gray-500">Taxa de serviço (10%)</Text>
+                    <Text className="text-[12.5px] font-bold text-gray-700">- {formatMoney(fees.serviceFee, currency)}</Text>
+                  </View>
+                  {isUrgent ? (
+                    <View className="flex-row items-center justify-between py-1">
+                      <Text className="text-[12.5px] font-bold text-gray-500">Bônus de urgência (5%)</Text>
+                      <Text className="text-[12.5px] font-bold text-emerald-600">+ {formatMoney(fees.urgentBonus, currency)}</Text>
+                    </View>
+                  ) : null}
+                  <View className="my-2 h-px bg-gray-100" />
+                  <View className="flex-row items-center justify-between">
+                    <Text className="text-[13px] font-extrabold text-gray-900">Você recebe</Text>
+                    <Text className="text-[16px] font-extrabold text-gray-900">{formatMoney(providerNet, currency)}</Text>
+                  </View>
+                </>
+              )}
+            </View>
 
             {/* Mensagem de escrow contextual */}
             {isHeld ? (
@@ -551,9 +744,10 @@ export default function RequestDetailsScreen() {
               </View>
             ) : null}
           </View>
+          ) : null}
 
-          {/* Ações do prestador: definir preço */}
-          {isProviderOwner && status === 'accepted' && !isPaid ? (
+          {/* Fallback: pedido aceite sem preço (legado). No fluxo novo o preço é definido ao aceitar. */}
+          {isProviderOwner && status === 'accepted' && !isPaid && !hasPrice ? (
             <View className="mt-5">
               <TouchableOpacity
                 activeOpacity={0.85}
@@ -561,23 +755,41 @@ export default function RequestDetailsScreen() {
                 className="h-13 items-center justify-center rounded-full bg-gray-200"
                 style={{ height: 52 }}
               >
-                <Text className="text-[14px] font-extrabold text-gray-800">{hasPrice ? 'Editar preço' : 'Definir preço'}</Text>
+                <Text className="text-[14px] font-extrabold text-gray-800">Definir preço</Text>
               </TouchableOpacity>
             </View>
           ) : null}
 
-          {/* Ações do cliente: pagar */}
-          {isClientOwner && status === 'accepted' && !isPaid ? (
+          {/* Ações do cliente: pagar (só quando há preço definido) */}
+          {isClientOwner && status === 'accepted' && !isPaid && hasPrice ? (
             <View className="mt-5">
               <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={() => setPayOpen(true)}
-                disabled={!hasPrice}
                 className="h-13 flex-row items-center justify-center gap-2 rounded-full bg-brand-cyan"
-                style={{ height: 52, opacity: !hasPrice ? 0.45 : 1 }}
+                style={{ height: 52 }}
               >
                 <Ionicons name="lock-closed" size={16} color="#fff" />
-                <Text className="text-[14px] font-extrabold text-white">{hasPrice ? 'Pagar agora' : 'Aguardando preço'}</Text>
+                <Text className="text-[14px] font-extrabold text-white">
+                  {isMultiDay ? `Pagar entrada (30%) • ${formatMoney(plan.firstClientAmount, currency)}` : 'Pagar agora'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {/* Vários dias: parcela final (70%) em falta — botão ativo a pagar a 2ª parte */}
+          {isClientOwner && needsFinalInstallment ? (
+            <View className="mt-5">
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => setPayOpen(true)}
+                className="h-13 flex-row items-center justify-center gap-2 rounded-full bg-brand-cyan"
+                style={{ height: 52 }}
+              >
+                <Ionicons name="lock-closed" size={16} color="#fff" />
+                <Text className="text-[14px] font-extrabold text-white">
+                  Pagar parcela final (70%) • {formatMoney(plan.finalClientAmount, currency)}
+                </Text>
               </TouchableOpacity>
             </View>
           ) : null}
@@ -588,13 +800,18 @@ export default function RequestDetailsScreen() {
               <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={handleRelease}
-                disabled={releasing}
+                disabled={releasing || !canComplete}
                 className="h-13 flex-row items-center justify-center gap-2 rounded-full bg-emerald-500"
-                style={{ height: 52, opacity: releasing ? 0.7 : 1 }}
+                style={{ height: 52, opacity: releasing || !canComplete ? 0.45 : 1 }}
               >
                 <Check size={18} color="#fff" strokeWidth={3} />
                 <Text className="text-[14px] font-extrabold text-white">{releasing ? 'Liberando...' : 'Serviço concluído'}</Text>
               </TouchableOpacity>
+              {!canComplete ? (
+                <Text className="mt-2 text-center text-[11px] font-bold text-gray-400">
+                  Pague a parcela final (70%) para poder concluir o serviço.
+                </Text>
+              ) : null}
             </View>
           ) : null}
 
@@ -659,7 +876,7 @@ export default function RequestDetailsScreen() {
               </TouchableOpacity>
               <TouchableOpacity
                 activeOpacity={0.85}
-                onPress={handleAccept}
+                onPress={onAcceptPress}
                 disabled={!canRespond}
                 className="flex-1 h-13 items-center justify-center rounded-full"
                 style={{ height: 52, backgroundColor: '#00E7FF', opacity: canRespond ? 1 : 0.45 }}
@@ -673,7 +890,7 @@ export default function RequestDetailsScreen() {
             <View className="mt-5">
               <TouchableOpacity
                 activeOpacity={0.85}
-                onPress={handleCancel}
+                onPress={() => setCancelOpen(true)}
                 className="h-13 items-center justify-center rounded-full bg-gray-200"
                 style={{ height: 52 }}
               >
@@ -689,9 +906,7 @@ export default function RequestDetailsScreen() {
         onClose={() => setPriceModalOpen(false)}
         initialMajor={agreed ? agreed / 100 : null}
         initialCurrency={currency || 'usd'}
-        onSave={async ({ priceAmount, currency }) => {
-          await setRequestPrice({ id: request.id, priceAmount, currency });
-        }}
+        onSave={handleAcceptWithPrice}
       />
 
       <PaymentBreakdownSheet
@@ -701,6 +916,10 @@ export default function RequestDetailsScreen() {
         agreedAmount={agreed}
         currency={currency}
         processing={paying}
+        isMultiDay={isMultiDay}
+        installment={installmentsPaid + 1}
+        initialUrgent={isUrgent}
+        lockUrgent={isMultiDay && installmentsPaid >= 1}
         onClose={() => (paying ? null : setPayOpen(false))}
         onConfirm={handlePay}
       />
@@ -713,6 +932,15 @@ export default function RequestDetailsScreen() {
         onClose={() => (submittingClientReview ? null : setClientReviewOpen(false))}
         onSubmit={handleSubmitClientReview}
       />
+
+      <CancelReasonModal
+        visible={cancelOpen}
+        role={isProviderOwner ? 'provider' : 'client'}
+        processing={cancelling}
+        onClose={() => setCancelOpen(false)}
+        onConfirm={confirmCancel}
+      />
     </View>
+    </KeyboardAvoidingView>
   );
 }

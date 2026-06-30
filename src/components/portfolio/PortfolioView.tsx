@@ -7,6 +7,7 @@ import {
   Dimensions,
   FlatList,
   Image,
+  Keyboard,
   Modal,
   Pressable,
   ScrollView,
@@ -263,7 +264,7 @@ function PostModal({
             backgroundColor: 'white',
             overflow: 'hidden',
           }}
-          onPress={() => {}}
+          onPress={() => Keyboard.dismiss()}
         >
           {post?.image_url ? <Image source={{ uri: post.image_url }} style={{ width: '100%', height: 360, backgroundColor: '#E5E7EB' }} resizeMode="cover" /> : null}
 
@@ -467,7 +468,7 @@ export function PortfolioView({ mode, providerId, accentColors }: Props) {
     <View>
       <Modal visible={createOpen} transparent animationType="fade" onRequestClose={() => setCreateOpen(false)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', paddingHorizontal: 18 }} onPress={() => setCreateOpen(false)}>
-          <Pressable style={{ marginTop: 160, borderRadius: 22, backgroundColor: 'white', padding: 16 }} onPress={() => {}}>
+          <Pressable style={{ marginTop: 160, borderRadius: 22, backgroundColor: 'white', padding: 16 }} onPress={() => Keyboard.dismiss()}>
             <Text className="text-[16px] font-extrabold text-gray-900">Criar Estado (sequência)</Text>
             <Text className="mt-1 text-[12px] text-gray-400">
               Você selecionou {createUris.length} fotos. Dê um título (ex: Natureza).

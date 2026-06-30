@@ -40,6 +40,11 @@ export type ServiceRequest = {
   providerNet?: number | null;
   platformNet?: number | null;
   releasedAt?: string | null;
+  // Serviço de vários dias (FlexPay 30/70)
+  isMultiDay?: boolean | null;
+  installmentsPaid?: number | null;
+  providerReleasedAmount?: number | null;
+  providerHeldAmount?: number | null;
   createdAt: string;
 };
 
@@ -76,6 +81,10 @@ function rowToRequest(r: RequestRow): ServiceRequest {
     providerNet: (r as any).provider_net ?? null,
     platformNet: (r as any).platform_net ?? null,
     releasedAt: (r as any).released_at ?? null,
+    isMultiDay: (r as any).is_multi_day ?? null,
+    installmentsPaid: (r as any).installments_paid ?? null,
+    providerReleasedAmount: (r as any).provider_released_amount ?? null,
+    providerHeldAmount: (r as any).provider_held_amount ?? null,
     createdAt: r.created_at,
   };
 }
@@ -86,9 +95,9 @@ type RequestsState = {
   addRequest: (req: Omit<ServiceRequest, 'id' | 'createdAt' | 'status'>) => Promise<void>;
   setRequestStatus: (id: string, status: ServiceRequestStatus) => Promise<void>;
   setRequestPrice: (args: { id: string; priceAmount: number; currency: string }) => Promise<void>;
-  markRequestPaid: (args: { id: string; paymentIntentId?: string | null; isUrgent?: boolean; fees?: { clientTotal: number; requestFee: number; serviceFee: number; urgentBonus: number; providerNet: number; platformNet: number } | null }) => Promise<void>;
+  markRequestPaid: (args: { id: string; paymentIntentId?: string | null; isUrgent?: boolean; fees?: { clientTotal: number; requestFee: number; serviceFee: number; urgentBonus: number; providerNet: number; platformNet: number } | null; multiDay?: { installmentsPaid: number; providerReleasedAmount: number; providerHeldAmount: number | null } | null }) => Promise<void>;
   releaseEscrow: (args: { id: string; clientId?: string }) => Promise<void>;
-  cancelRequest: (id: string) => Promise<void>;
+  cancelRequest: (id: string, opts?: { reason?: string; by?: 'client' | 'provider' }) => Promise<void>;
   deleteRequest: (id: string) => Promise<void>;
   submitReview: (args: {
     requestId: string;
@@ -152,7 +161,7 @@ export const useRequestsStore = create<RequestsState>()(
         set((state) => ({ requests: [optimistic, ...state.requests] }));
 
         if (!isSupabaseConfigured) return;
-        const payload = {
+        const payload: any = {
           client_id: req.clientId,
           client_name: req.clientName,
           client_avatar_url: (req as any).clientAvatarUrl ?? null,
@@ -166,7 +175,22 @@ export const useRequestsStore = create<RequestsState>()(
           service_time: req.time || null,
           status: 'pending' as RequestStatus,
         };
-        const { data, error } = await supabase.from('requests').insert(payload).select('*').maybeSingle();
+        // Serviço de vários dias (FlexPay 30/70). Só envia quando true.
+        if ((req as any).isMultiDay === true) payload.is_multi_day = true;
+        // Pedido vindo do catálogo já nasce com o preço definido (não precisa o prestador definir).
+        const priceAmt = Number((req as any).priceAmount || 0);
+        if (priceAmt > 0) {
+          payload.price_amount = priceAmt;
+          payload.currency = String((req as any).currency || 'aoa').toLowerCase();
+        }
+        let { data, error } = await supabase.from('requests').insert(payload).select('*').maybeSingle();
+        // Colunas opcionais podem não existir ainda (migração por rodar) — remove e tenta de novo.
+        for (let i = 0; i < 2 && error; i++) {
+          const m = /could not find the '(\w+)' column/i.exec(String((error as any)?.message || ''));
+          if (!m || !(m[1] in payload)) break;
+          delete payload[m[1]];
+          ({ data, error } = await supabase.from('requests').insert(payload).select('*').maybeSingle());
+        }
         if (error) {
           // Força uma mensagem legível no app (RLS/coluna inexistente/FK/etc)
           const msg = (error as any)?.message || 'Falha ao inserir pedido.';
@@ -227,7 +251,7 @@ export const useRequestsStore = create<RequestsState>()(
         }
       },
 
-      markRequestPaid: async ({ id, paymentIntentId, isUrgent, fees }) => {
+      markRequestPaid: async ({ id, paymentIntentId, isUrgent, fees, multiDay }) => {
         const paidAt = new Date().toISOString();
         // Otimista: pago e RETIDO (escrow held). NÃO concluído — o cliente ainda precisa liberar.
         set((state) => ({
@@ -248,6 +272,13 @@ export const useRequestsStore = create<RequestsState>()(
                         urgentBonus: fees.urgentBonus,
                         providerNet: fees.providerNet,
                         platformNet: fees.platformNet,
+                      }
+                    : {}),
+                  ...(multiDay
+                    ? {
+                        installmentsPaid: multiDay.installmentsPaid,
+                        providerReleasedAmount: multiDay.providerReleasedAmount,
+                        ...(multiDay.providerHeldAmount != null ? { providerHeldAmount: multiDay.providerHeldAmount } : {}),
                       }
                     : {}),
                 }
@@ -272,6 +303,12 @@ export const useRequestsStore = create<RequestsState>()(
           patch.urgent_bonus = fees.urgentBonus;
           patch.provider_net = fees.providerNet;
           patch.platform_net = fees.platformNet;
+        }
+        // Vários dias: regista a parcela paga + o split liberado/retido do prestador.
+        if (multiDay) {
+          patch.installments_paid = multiDay.installmentsPaid;
+          patch.provider_released_amount = multiDay.providerReleasedAmount;
+          if (multiDay.providerHeldAmount != null) patch.provider_held_amount = multiDay.providerHeldAmount;
         }
         const attempt = await supabase.from('requests').update(patch).eq('id', id);
         if (attempt.error) {
@@ -310,15 +347,24 @@ export const useRequestsStore = create<RequestsState>()(
         }
       },
 
-      cancelRequest: async (id) => {
+      cancelRequest: async (id, opts) => {
+        const reason = opts?.reason?.trim() || null;
+        const by = opts?.by || null;
         // Otimista: marca como cancelado (mantém para histórico)
         set((state) => ({
           requests: state.requests.map((r) => (r.id === id ? { ...r, status: 'cancelled' } : r)),
         }));
         if (!isSupabaseConfigured) return;
         const now = new Date().toISOString();
-        const { error } = await supabase.from('requests').update({ status: 'cancelled', cancelled_at: now } as any).eq('id', id);
-        if (error) throw error;
+        // Tenta gravar com o motivo; se as colunas novas não existirem, grava só o essencial.
+        const full = await supabase
+          .from('requests')
+          .update({ status: 'cancelled', cancelled_at: now, cancel_reason: reason, cancelled_by: by } as any)
+          .eq('id', id);
+        if (full.error) {
+          const { error } = await supabase.from('requests').update({ status: 'cancelled', cancelled_at: now } as any).eq('id', id);
+          if (error) throw error;
+        }
       },
 
       deleteRequest: async (id) => {

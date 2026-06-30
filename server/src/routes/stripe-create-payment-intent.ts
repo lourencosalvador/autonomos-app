@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import type Stripe from 'stripe';
 import { isStripeConfigured, stripe, stripeMode } from '../lib/stripe.js';
 import { isSupabaseAdminConfigured, supabaseAdmin } from '../lib/supabaseAdmin.js';
-import { computeFees } from '../lib/pricing.js';
+import { computeFees, computeInstallments } from '../lib/pricing.js';
 
 function badRequest(res: Response, message: string) {
   return res.status(400).json({ ok: false, message });
@@ -16,6 +16,7 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
     const requestId = String((req.body as any)?.requestId || '').trim();
     const clientId = String((req.body as any)?.clientId || '').trim(); // opcional (ajuda a validar)
     const isUrgent = (req.body as any)?.isUrgent === true; // urgência marcada pelo cliente no checkout
+    const requestedInstallment = Number((req.body as any)?.installment ?? 0); // 1 ou 2 (vários dias)
 
     if (!requestId) return badRequest(res, 'requestId é obrigatório.');
 
@@ -49,7 +50,20 @@ export async function stripeCreatePaymentIntentRoute(req: Request, res: Response
 
     // Taxas: o CLIENTE paga o total (acordado + taxa de solicitação). Urgente dobra a taxa.
     const fees = computeFees(agreed, isUrgent);
-    const amount = fees.clientTotal;
+
+    // Serviço de vários dias (30/70): o cartão também paga por parcela.
+    const isMultiDay = (requestRow as any).is_multi_day === true;
+    const installmentsPaid = Number((requestRow as any).installments_paid ?? 0);
+    const plan = computeInstallments(fees, isMultiDay);
+    let installment = 1;
+    let amount = fees.clientTotal;
+    if (isMultiDay) {
+      if (installmentsPaid >= plan.installmentsTotal) {
+        return badRequest(res, 'Este serviço já foi totalmente pago.');
+      }
+      installment = requestedInstallment >= 1 ? requestedInstallment : installmentsPaid + 1;
+      amount = installment >= 2 ? plan.finalClientAmount : plan.firstClientAmount;
+    }
 
     const feeMetadata = {
       agreed_amount: String(fees.agreed),

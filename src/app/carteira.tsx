@@ -10,9 +10,9 @@ import UnionArt from '../../assets/images/Union.svg';
 import { EmptyState } from '../components/EmptyState';
 import { WithdrawSheet } from '../components/WithdrawSheet';
 import { useAuthStore } from '../stores/authStore';
-import { isSupabaseConfigured, supabase, type PaymentRow, type WithdrawalRow } from '../lib/supabase';
+import { isSupabaseConfigured, supabase, type WithdrawalRow } from '../lib/supabase';
 import { createStripeConnectOnboarding, getBackendHealth, requestWithdrawal } from '../services/apiService';
-import { computeWalletBalance, paymentEscrow, paymentProviderNet, requestRowToPayment } from '../lib/walletBalance';
+import { computeWalletBalance, paymentEscrow, paymentProviderNet, requestRowToPayment, type WalletPayment } from '../lib/walletBalance';
 import { formatMoney } from '../lib/pricing';
 import { toast } from '../lib/sonner';
 
@@ -45,7 +45,7 @@ export default function CarteiraScreen() {
   const user = useAuthStore((s) => s.user);
   const [showIban, setShowIban] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
-  const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [payments, setPayments] = useState<WalletPayment[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
@@ -62,13 +62,22 @@ export default function CarteiraScreen() {
       .filter((p) => p.status === 'succeeded')
       .map((p) => {
         const ts = new Date(p.paid_at || p.created_at).getTime();
-        const esc = paymentEscrow(p);
+        // Suporta release parcial (vários dias): parte liberada + parte retida no mesmo pedido.
+        const released = p.released_net ?? (paymentEscrow(p) === 'released' ? paymentProviderNet(p) : 0);
+        const held = p.held_net ?? (paymentEscrow(p) === 'held' ? paymentProviderNet(p) : 0);
+        const esc: 'held' | 'released' = held > 0 ? 'held' : 'released';
+        const subtitle =
+          released > 0 && held > 0
+            ? 'Parte liberada • resto retido'
+            : esc === 'held'
+              ? 'Retido (em processamento)'
+              : 'Liberado (realizado)';
         return {
           id: `p_${p.id}`,
           name: 'Pagamento recebido',
-          subtitle: esc === 'held' ? 'Retido (em processamento)' : 'Liberado (realizado)',
+          subtitle,
           date: new Date(ts).toLocaleString('pt-PT'),
-          amount: paymentProviderNet(p),
+          amount: released + held,
           type: 'payment' as const,
           escrow: esc,
           ts,
@@ -105,7 +114,7 @@ export default function CarteiraScreen() {
       // do backend (confirm/webhook) e nem sempre é populada, então não dependemos dela aqui.
       const { data: reqs, error } = await supabase
         .from('requests')
-        .select('id, client_name, price_amount, currency, paid_at, payment_status, escrow_status, provider_net, is_urgent, client_total, status, created_at')
+        .select('id, client_name, price_amount, currency, paid_at, payment_status, escrow_status, provider_net, is_urgent, client_total, status, created_at, is_multi_day, installments_paid, provider_released_amount, provider_held_amount')
         .eq('provider_id', user.id)
         .eq('payment_status', 'succeeded')
         .order('paid_at', { ascending: false });

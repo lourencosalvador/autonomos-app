@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Star } from 'lucide-react-native';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Keyboard, Modal, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { ChoiceGroup } from './ChoiceGroup';
 import { computeClientRating } from '../lib/reviews';
 
@@ -28,7 +28,7 @@ export function ClientReviewModal({ visible, clientName, serviceName, processing
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable className="flex-1 bg-black/50 justify-end" onPress={processing ? undefined : onClose}>
-        <Pressable className="rounded-t-[28px] bg-white px-5 pt-3 pb-9" onPress={() => {}}>
+        <Pressable className="rounded-t-[28px] bg-white px-5 pt-3 pb-9" onPress={() => Keyboard.dismiss()}>
           <View className="items-center">
             <View className="h-1.5 w-10 rounded-full bg-gray-200" />
           </View>

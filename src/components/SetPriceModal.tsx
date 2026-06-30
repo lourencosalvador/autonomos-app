@@ -50,7 +50,7 @@ export function SetPriceModal(props: {
   return (
     <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onClose}>
       <Pressable className="flex-1 bg-black/50 items-center justify-end px-5 pb-10" onPress={Keyboard.dismiss}>
-        <Pressable className="w-full rounded-3xl bg-white p-5" onPress={() => {}} style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
+        <Pressable className="w-full rounded-3xl bg-white p-5" onPress={() => Keyboard.dismiss()} style={{ borderWidth: 1, borderColor: '#EEF2F7' }}>
           <Text className="text-[16px] font-extrabold text-gray-900">Definir preço</Text>
           <Text className="mt-1 text-[12px] text-gray-500">
             O cliente só consegue pagar depois que você definir o valor.
@@ -64,6 +64,9 @@ export function SetPriceModal(props: {
                 onChangeText={setMajorText}
                 placeholder="Ex: 25.00"
                 keyboardType="decimal-pad"
+                returnKeyType="done"
+                blurOnSubmit
+                onSubmitEditing={Keyboard.dismiss}
                 className="mt-2 h-12 rounded-2xl px-4 text-[14px] font-bold text-gray-900"
                 style={{ borderWidth: 1, borderColor: '#EEF2F7' }}
               />

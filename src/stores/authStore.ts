@@ -352,21 +352,34 @@ export const useAuthStore = create<AuthState>()(
           });
           if (error) throw error;
 
-          // cria/atualiza profile já com role
+          // cria/atualiza profile já com role. Resiliente: se alguma coluna opcional
+          // (gender/birth_date/work_area) ainda não existir, remove-a e tenta de novo,
+          // garantindo que pelo menos id+role+name são gravados (o app precisa do role).
           if (data.user) {
-            await supabase.from('profiles').upsert(
-              {
-                id: data.user.id,
-                role,
-                name,
-                phone: opts?.phone ?? null,
-                avatar_url: (data.user.user_metadata as any)?.avatar_url || null,
-                work_area: opts?.workArea ?? null,
-                gender: opts?.gender ?? null,
-                birth_date: opts?.birthDate ?? null,
-              },
-              { onConflict: 'id' }
-            );
+            const baseProfile: any = {
+              id: data.user.id,
+              role,
+              name,
+              avatar_url: (data.user.user_metadata as any)?.avatar_url || null,
+            };
+            const fullProfile: any = {
+              ...baseProfile,
+              phone: opts?.phone ?? null,
+              work_area: opts?.workArea ?? null,
+              gender: opts?.gender ?? null,
+              birth_date: opts?.birthDate ?? null,
+            };
+            let { error: upErr } = await supabase.from('profiles').upsert(fullProfile, { onConflict: 'id' });
+            for (let i = 0; i < 4 && upErr; i++) {
+              const m = /could not find the '(\w+)' column/i.exec(String((upErr as any)?.message || ''));
+              if (!m || !(m[1] in fullProfile)) break;
+              delete fullProfile[m[1]];
+              ({ error: upErr } = await supabase.from('profiles').upsert(fullProfile, { onConflict: 'id' }));
+            }
+            if (upErr) {
+              // Último recurso: grava o essencial (id+role+name) para o app saber o tipo de conta.
+              await supabase.from('profiles').upsert(baseProfile, { onConflict: 'id' });
+            }
           }
 
           // Se o Supabase exigir confirmação de email, pode não vir sessão.
@@ -465,11 +478,13 @@ export const useAuthStore = create<AuthState>()(
       },
 
       signOut: async () => {
-        await supabase.auth.signOut();
-        set({
-          user: null,
-          isAuthenticated: false,
-        });
+        // Limpa o estado JÁ (síncrono) para o redirect ser imediato e não "piscar" dados antigos.
+        set({ user: null, isAuthenticated: false });
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // mesmo que a chamada de rede falhe, a sessão local já foi limpa
+        }
       },
 
       updateUser: (userData: Partial<User>) => {

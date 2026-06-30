@@ -15,6 +15,19 @@
  * Todos os valores são em "minor units" (ex: cêntimos). 6000 = 60,00.
  */
 
+/**
+ * Taxa de deslocação (Kz inteiros): base + (km × por_km).
+ * Fórmula: 500 + (km × 200). É informativa no ecrã de Termos do Serviço;
+ * o prestador confirma o valor final antes do pagamento.
+ */
+export const TRAVEL_BASE_KZ = 500;
+export const TRAVEL_PER_KM_KZ = 200;
+
+export function computeTravelFee(km: number) {
+  const k = Math.max(0, Math.round(km || 0));
+  return TRAVEL_BASE_KZ + k * TRAVEL_PER_KM_KZ;
+}
+
 export const REQUEST_FEE_RATE = 0.1; // taxa de solicitação (cliente)
 export const SERVICE_FEE_RATE = 0.1; // taxa de serviço (prestador)
 export const URGENT_REQUEST_FEE_RATE = 0.2; // urgente: o cliente paga o dobro
@@ -58,6 +71,56 @@ export function computeFees(agreed: number, isUrgent = false): FeeBreakdown {
   const platformNet = clientTotal - providerNet;
 
   return { agreed: a, isUrgent, requestFee, serviceFee, urgentBonus, clientTotal, providerNet, platformNet };
+}
+
+// ── Serviço de vários dias (FlexPay 30/70) ──────────────────────────────
+// Quando o cliente marca o serviço como "mais de 1 dia", o pagamento divide-se:
+//   • 1ª parcela = 30% do total → vai DIRETO para o prestador (sacável já)
+//   • 2ª parcela = 70% do total → fica RETIDA até "Serviço concluído"
+export const MULTI_DAY_FIRST_RATE = 0.3; // 30% no arranque (liberado de imediato)
+export const MULTI_DAY_FINAL_RATE = 0.7; // 70% na parcela final (retido até concluir)
+
+export type InstallmentPlan = {
+  isMultiDay: boolean;
+  /** Nº de parcelas (1 para serviço normal, 2 para vários dias). */
+  installmentsTotal: number;
+  /** Valor que o CLIENTE paga na 1ª parcela (minor units). */
+  firstClientAmount: number;
+  /** Valor que o CLIENTE paga na parcela final (minor units). */
+  finalClientAmount: number;
+  /** Líquido do prestador referente à 1ª parcela (liberado já). */
+  firstProviderNet: number;
+  /** Líquido do prestador referente à parcela final (retido até concluir). */
+  finalProviderNet: number;
+};
+
+/**
+ * Divide um FeeBreakdown em parcelas conforme a duração do serviço.
+ * A divisão é proporcional, por isso o cliente paga sempre o mesmo total e o
+ * prestador recebe sempre o mesmo líquido — muda só o "quando" e o "quanto fica retido".
+ */
+export function computeInstallments(fees: FeeBreakdown, isMultiDay: boolean): InstallmentPlan {
+  if (!isMultiDay) {
+    return {
+      isMultiDay: false,
+      installmentsTotal: 1,
+      firstClientAmount: fees.clientTotal,
+      finalClientAmount: 0,
+      firstProviderNet: fees.providerNet,
+      finalProviderNet: 0,
+    };
+  }
+  // A 2ª parte é sempre "o resto" para não perder cêntimos no arredondamento.
+  const firstClientAmount = round(fees.clientTotal * MULTI_DAY_FIRST_RATE);
+  const firstProviderNet = round(fees.providerNet * MULTI_DAY_FIRST_RATE);
+  return {
+    isMultiDay: true,
+    installmentsTotal: 2,
+    firstClientAmount,
+    finalClientAmount: fees.clientTotal - firstClientAmount,
+    firstProviderNet,
+    finalProviderNet: fees.providerNet - firstProviderNet,
+  };
 }
 
 /** Formata minor units para exibição (ex: "Kz 66.000,00"). */

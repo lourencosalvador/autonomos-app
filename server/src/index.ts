@@ -2,7 +2,10 @@ import cors from 'cors';
 import express from 'express';
 import './env.js';
 import { isStripeConfigured, stripeMode } from './lib/stripe.js';
+import { isGpayConfigured } from './lib/gpay.js';
 import { isSupabaseAdminConfigured, supabaseHost } from './lib/supabaseAdmin.js';
+import { gpayPayRoute } from './routes/gpay-pay.js';
+import { gpayWebhookRoute } from './routes/gpay-webhook.js';
 import { sendOTPRoute } from './routes/send-otp.js';
 import { streamTokenRoute } from './routes/stream-token.js';
 import { stripeConfirmPaymentRoute } from './routes/stripe-confirm-payment.js';
@@ -23,7 +26,6 @@ app.use(cors());
 
 // Stripe webhook precisa do body RAW para validar assinatura
 app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookRoute);
-
 // JSON para o resto das rotas
 app.use(express.json());
 
@@ -33,6 +35,7 @@ app.get('/health', (req, res) => {
     message: 'Autonomos Backend is running',
     stripeConfigured: isStripeConfigured,
     stripeMode,
+    gpayConfigured: isGpayConfigured,
     supabaseAdminConfigured: isSupabaseAdminConfigured,
     supabaseHost,
   });
@@ -43,6 +46,8 @@ app.post('/api/verify-otp', verifyOTPRoute);
 app.post('/api/stream/token', streamTokenRoute);
 app.post('/api/stripe/payment-intent', stripeCreatePaymentIntentRoute);
 app.post('/api/stripe/confirm', stripeConfirmPaymentRoute);
+app.post('/api/gpay/pay', gpayPayRoute);
+app.post('/api/gpay/webhook', gpayWebhookRoute);
 app.post('/api/stripe/connect/onboard', stripeConnectOnboardRoute);
 app.post('/api/escrow/release', escrowReleaseRoute);
 app.post('/api/withdrawals/request', withdrawalRequestRoute);
@@ -59,6 +64,7 @@ app.listen(Number(PORT), HOST, () => {
   console.log(`📱 Twilio configurado: ${process.env.TWILIO_ACCOUNT_SID ? '✅' : '❌'}`);
   console.log(`💬 Stream configurado: ${process.env.STREAM_API_KEY && process.env.STREAM_API_SECRET ? '✅' : '❌'}`);
   console.log(`💳 Stripe configurado: ${process.env.STRIPE_SECRET_KEY ? '✅' : '❌'}`);
+  console.log(`🟢 GPay (Multicaixa/Referência) ativo: ${isGpayConfigured ? '✅' : '❌'}`);
 
   // Keep-alive: o plano free do Render hiberna após ~15 min de inatividade, e o 1º request
   // depois disso leva ~50s+ (cold start), estourando o tempo do pagamento. Este auto-ping

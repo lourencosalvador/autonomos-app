@@ -7,6 +7,7 @@ export const API_ENDPOINTS = {
   verifyOTP: `${API_BASE_URL}/api/verify-otp`,
   stripePaymentIntent: `${API_BASE_URL}/api/stripe/payment-intent`,
   stripeConfirm: `${API_BASE_URL}/api/stripe/confirm`,
+  gpayPay: `${API_BASE_URL}/api/gpay/pay`,
   stripeConnectOnboard: `${API_BASE_URL}/api/stripe/connect/onboard`,
   escrowRelease: `${API_BASE_URL}/api/escrow/release`,
   withdrawalRequest: `${API_BASE_URL}/api/withdrawals/request`,
@@ -109,7 +110,7 @@ export async function verifyOTPCode(type: 'email' | 'sms', value: string, code: 
   return data;
 }
 
-export async function createStripePaymentIntent(args: { requestId: string; clientId?: string; isUrgent?: boolean }) {
+export async function createStripePaymentIntent(args: { requestId: string; clientId?: string; isUrgent?: boolean; installment?: number }) {
   // Reutilizar o PI é seguro no backend, então pode tentar de novo após cold start.
   const response = await postJson(API_ENDPOINTS.stripePaymentIntent, args, { timeoutMs: 40000, retries: 1 });
   const data: any = await safeReadJson(response);
@@ -131,6 +132,39 @@ export async function createStripePaymentIntent(args: { requestId: string; clien
       destination?: string;
       reason?: string;
     };
+  };
+}
+
+/**
+ * Inicia um pagamento via GPay Angola.
+ * - method 'multicaixa' → push na app Multicaixa Express (cliente confirma no telemóvel)
+ * - method 'reference'  → devolve um número de referência para o cliente pagar (ATM/banco)
+ * A confirmação chega ao webhook do backend, que retém o escrow.
+ */
+export async function createGpayPayment(args: {
+  requestId: string;
+  clientId?: string;
+  method: 'multicaixa' | 'reference';
+  phone?: string;
+  name?: string;
+  email?: string;
+  isUrgent?: boolean;
+}) {
+  // Sem retry automático: criar pagamento não é idempotente (evita duplicar).
+  const response = await postJson(API_ENDPOINTS.gpayPay, args, { timeoutMs: 45000, retries: 0 });
+  const data: any = await safeReadJson(response);
+  if (!response.ok) {
+    const raw = typeof data?.__raw === 'string' ? data.__raw.trim() : '';
+    const snippet = raw ? ` (${raw.slice(0, 80)}${raw.length > 80 ? '...' : ''})` : '';
+    throw new Error(data.message || `Erro ao iniciar pagamento${snippet}`);
+  }
+  return data as {
+    ok: true;
+    method: 'multicaixa' | 'reference';
+    transactionId: string;
+    amount: number;
+    referenceNumber?: string | null;
+    entity?: string | null;
   };
 }
 

@@ -1,14 +1,24 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { FlatList } from 'react-native-gesture-handler';
 import { EmptyState } from '../components/EmptyState';
+import { formatKz, services } from '../data/services';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { useAuthStore } from '../stores/authStore';
 import { useRequestsStore } from '../stores/requestsStore';
 import { useFocusEffect } from '@react-navigation/native';
+
+/** Preço inicial (Kz) do serviço a partir do catálogo, casando pelo nome. */
+function servicePriceFor(serviceName: string): number | null {
+  const n = normalizeText(serviceName);
+  const found =
+    services.find((s) => normalizeText(s.name) === n) ||
+    services.find((s) => normalizeText(s.name).includes(n) || n.includes(normalizeText(s.name)));
+  return found?.priceFrom ?? null;
+}
 
 type ProviderRow = {
   id: string;
@@ -101,6 +111,8 @@ export default function ServiceProvidersScreen() {
 
   const serviceName = (params.serviceName || 'Fotografia').toString();
   const title = `Prestadores de ${serviceName}`;
+  const priceFrom = useMemo(() => servicePriceFor(serviceName), [serviceName]);
+  const priceLabel = priceFrom != null ? `A partir de ${formatKz(priceFrom)}` : 'A combinar';
 
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
@@ -171,12 +183,10 @@ export default function ServiceProvidersScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceName]);
 
+  // Atualiza os pedidos ao focar a tela, para o estado (pendente/aceite) do card ficar correto.
   useFocusEffect(
-    useMemo(() => {
-      return () => {
-        if (!user?.id) return;
-        fetchRequests(user.id).catch(() => {});
-      };
+    useCallback(() => {
+      if (user?.id) fetchRequests(user.id).catch(() => {});
     }, [fetchRequests, user?.id])
   );
 
@@ -282,21 +292,19 @@ export default function ServiceProvidersScreen() {
               : null;
           const pending = !!existing && (existing.status === 'pending' || existing.status === 'accepted');
 
+          // Sempre abre o perfil do prestador (mesmo com pedido pendente).
+          // De lá, o cliente acede ao pedido pelo botão "Ver pedido".
           const onPress = () => {
-            if (pending && existing) {
-              router.push({ pathname: '/request-details', params: { requestId: existing.id } });
-            } else {
-              router.push({
-                pathname: '/perfil-prestador',
-                params: {
-                  serviceName,
-                  providerId: item.id,
-                  providerName: item.name || 'Prestador',
-                  providerJob: item.work_area || serviceName,
-                  providerAvatarUrl: item.avatar_url || undefined,
-                },
-              });
-            }
+            router.push({
+              pathname: '/perfil-prestador',
+              params: {
+                serviceName,
+                providerId: item.id,
+                providerName: item.name || 'Prestador',
+                providerJob: item.work_area || serviceName,
+                providerAvatarUrl: item.avatar_url || undefined,
+              },
+            });
           };
 
           return (
@@ -316,7 +324,7 @@ export default function ServiceProvidersScreen() {
                   {item.work_area || serviceName}
                 </Text>
                 <Text className="mt-1.5 text-[14px] font-extrabold text-brand-cyan">
-                  A combinar <Text className="text-[11px] font-bold text-gray-400">· por serviço</Text>
+                  {priceLabel} <Text className="text-[11px] font-bold text-gray-400">· por serviço</Text>
                 </Text>
               </View>
 

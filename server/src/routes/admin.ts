@@ -39,8 +39,39 @@ export async function adminApplicationsRoute(req: Request, res: Response) {
       (certsByProvider[c.provider_id] = certsByProvider[c.provider_id] || []).push(c);
     });
   }
-  const applications = (profiles || []).map((p: any) => ({ ...p, certificates: certsByProvider[p.id] || [] }));
-  return res.json({ ok: true, applications });
+  const profileApps = (profiles || []).map((p: any) => ({ ...p, source: 'profile', certificates: certsByProvider[p.id] || [] }));
+
+  // Candidaturas vindas do SITE (tabela provider_applications). Graceful se a tabela ainda não existir.
+  let websiteApps: any[] = [];
+  try {
+    const { data: webApps } = await supabaseAdmin
+      .from('provider_applications')
+      .select('*')
+      .eq('status', status)
+      .order('created_at', { ascending: false });
+    websiteApps = (webApps || []).map((w: any) => ({
+      id: w.id,
+      source: 'website',
+      name: w.name,
+      avatar_url: w.photo_url || null,
+      work_area: w.work_area,
+      specialty: w.specialty || null,
+      city: w.city || null,
+      phone: w.phone || null,
+      email: w.email || null,
+      bio: w.description || null,
+      experience_time: null,
+      experience_years: typeof w.experience_years === 'number' ? w.experience_years : null,
+      id_document_url: w.id_document_url || null,
+      approval_note: w.note || null,
+      approval_requested_at: w.created_at,
+      certificates: [],
+    }));
+  } catch {
+    // tabela ainda não criada — ignora
+  }
+
+  return res.json({ ok: true, applications: [...websiteApps, ...profileApps] });
 }
 
 export async function adminDecisionRoute(req: Request, res: Response) {
@@ -50,9 +81,21 @@ export async function adminDecisionRoute(req: Request, res: Response) {
   const providerId = String((req.body as any)?.providerId || '').trim();
   const decision = String((req.body as any)?.decision || '').trim();
   const note = String((req.body as any)?.note || '').trim() || null;
+  const source = String((req.body as any)?.source || 'profile').trim();
   if (!providerId || (decision !== 'approved' && decision !== 'rejected')) {
     return res.status(400).json({ ok: false, message: 'Dados inválidos.' });
   }
+
+  // Candidatura do site → atualiza a tabela provider_applications.
+  if (source === 'website') {
+    const { error } = await supabaseAdmin
+      .from('provider_applications')
+      .update({ status: decision, note, reviewed_at: new Date().toISOString() } as any)
+      .eq('id', providerId);
+    if (error) return res.status(500).json({ ok: false, message: error.message });
+    return res.json({ ok: true });
+  }
+
   const { error } = await supabaseAdmin
     .from('profiles')
     .update({ approval_status: decision, approval_note: note, approval_reviewed_at: new Date().toISOString() } as any)
@@ -190,25 +233,29 @@ const DASHBOARD_HTML = `<!doctype html>
       html += '<div class="card">'
         + '<div class="head">'
         + '<img class="av" src="'+esc(a.avatar_url||'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=120')+'" />'
-        + '<div style="flex:1"><div class="name">'+esc(a.name||'Prestador')+'</div><div class="area">'+esc(a.work_area||'—')+'</div></div>'
+        + '<div style="flex:1"><div class="name">'+esc(a.name||'Prestador')+'</div><div class="area">'+esc(a.work_area||'—')+(a.source==='website'?'  ·  via site':'')+'</div></div>'
         + '<span class="badge '+badge+'">'+badgeTxt+'</span>'
         + '</div>'
-        + '<div class="row"><div class="lbl">Biografia</div><div class="val">'+esc(a.bio||'—')+'</div></div>'
-        + '<div class="row"><div class="lbl">Descrição do trabalho</div><div class="val">'+esc(a.work_description||'—')+'</div></div>'
-        + '<div class="row"><div class="lbl">Experiência</div><div class="val">'+esc(EXP[a.experience_time]||'—')+'</div></div>'
-        + '<div class="row"><div class="lbl">Disponibilidade</div><div class="val">'+esc(fmtAvail(a.availability))+'</div></div>'
+        + '<div class="row"><div class="lbl">'+(a.source==='website'?'Descrição':'Biografia')+'</div><div class="val">'+esc(a.bio||'—')+'</div></div>'
+        + (a.work_description ? '<div class="row"><div class="lbl">Descrição do trabalho</div><div class="val">'+esc(a.work_description)+'</div></div>' : '')
+        + (a.specialty ? '<div class="row"><div class="lbl">Especialidade</div><div class="val">'+esc(a.specialty)+'</div></div>' : '')
+        + (a.city ? '<div class="row"><div class="lbl">Cidade</div><div class="val">'+esc(a.city)+'</div></div>' : '')
+        + ((a.phone||a.email) ? '<div class="row"><div class="lbl">Contacto</div><div class="val">'+esc([a.phone,a.email].filter(Boolean).join('  ·  '))+'</div></div>' : '')
+        + '<div class="row"><div class="lbl">Experiência</div><div class="val">'+esc(a.experience_time?(EXP[a.experience_time]||'—'):(a.experience_years!=null?(a.experience_years+' ano'+(a.experience_years===1?'':'s')):'—'))+'</div></div>'
+        + (a.source==='website' ? '' : '<div class="row"><div class="lbl">Disponibilidade</div><div class="val">'+esc(fmtAvail(a.availability))+'</div></div>')
+        + (a.id_document_url ? '<div class="row"><div class="lbl">Bilhete de Identidade</div><div class="chips"><a class="chip" target="_blank" href="'+esc(a.id_document_url)+'">🪪 Ver BI</a></div></div>' : '')
         + (certs ? '<div class="row"><div class="lbl">Certificados</div><div class="chips">'+certs+'</div></div>' : '')
         + (a.approval_note ? '<div class="row"><div class="lbl">Nota</div><div class="val">'+esc(a.approval_note)+'</div></div>' : '')
-        + (TAB==='pending' ? '<div class="acts"><button class="btn approve" onclick="decide(\\''+a.id+'\\',\\'approved\\')">Aprovar</button><button class="btn reject" onclick="decide(\\''+a.id+'\\',\\'rejected\\')">Recusar</button></div>' : '')
+        + (TAB==='pending' ? '<div class="acts"><button class="btn approve" onclick="decide(\\''+a.id+'\\',\\'approved\\',\\''+a.source+'\\')">Aprovar</button><button class="btn reject" onclick="decide(\\''+a.id+'\\',\\'rejected\\',\\''+a.source+'\\')">Recusar</button></div>' : '')
         + '</div>';
     }
     el.innerHTML = html;
   }
 
-  function decide(id, decision){
+  function decide(id, decision, source){
     var note = null;
     if(decision==='rejected'){ note = prompt('Motivo da recusa (opcional):')||''; }
-    fetch('/api/admin/decision',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':KEY},body:JSON.stringify({providerId:id,decision:decision,note:note})})
+    fetch('/api/admin/decision',{method:'POST',headers:{'Content-Type':'application/json','x-admin-key':KEY},body:JSON.stringify({providerId:id,decision:decision,note:note,source:source})})
       .then(function(r){return r.json();})
       .then(function(j){ if(j&&j.ok){ load(); } else { alert((j&&j.message)||'Falhou.'); } })
       .catch(function(){ alert('Erro de ligação.'); });

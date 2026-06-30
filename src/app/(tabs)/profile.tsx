@@ -10,6 +10,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { toast } from '../../lib/sonner';
 import { isSupabaseConfigured, supabase } from '../../lib/supabase';
 import { EmptyState } from '../../components/EmptyState';
+import { CatalogView } from '../../components/catalog/CatalogView';
 import { PortfolioView } from '../../components/portfolio/PortfolioView';
 
 const ProfileImage = require('../../../assets/images/Profile.jpg');
@@ -109,6 +110,10 @@ export default function ProfileScreen() {
   const params = useLocalSearchParams<{ tab?: string }>();
   const initialTab = (params.tab || '').toString();
 
+  // Durante o logout o user fica null por um instante — não renderiza o perfil
+  // (evita o "flash" com dados antigos/fallback antes do redirect para o welcome).
+  if (!user) return null;
+
   if (user?.role === 'professional') {
     return <ProfessionalProfile initialTab={initialTab} />;
   }
@@ -152,10 +157,13 @@ function ClientProfile() {
       'Tem certeza que deseja sair da sua conta?',
       [
         { text: 'Cancelar', style: 'cancel' },
-        { 
-          text: 'Sair', 
+        {
+          text: 'Sair',
           style: 'destructive',
-          onPress: signOut 
+          onPress: () => {
+            signOut(); // limpa o estado de forma síncrona
+            router.replace('/(auth)/welcome'); // redirect imediato (sem flash)
+          },
         },
       ]
     );
@@ -197,10 +205,10 @@ function ClientProfile() {
           </View>
 
           <Text className="text-[30px] font-bold text-white">
-            {user?.name || 'Marcelo Vica'}
+            {user?.name || 'Utilizador'}
           </Text>
           <Text className="mt-1 text-[15px] text-black/80">
-            {user?.email || 'marcelopedrovica@gmail.com'}
+            {user?.email || ''}
           </Text>
 
           <View className="mt-3 flex-row items-center gap-1">
@@ -433,7 +441,14 @@ function ProfessionalProfile({ initialTab }: { initialTab?: string }) {
   const handleSignOut = () => {
     Alert.alert('Sair', 'Tem certeza que deseja sair da sua conta?', [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Sair', style: 'destructive', onPress: signOut },
+      {
+        text: 'Sair',
+        style: 'destructive',
+        onPress: () => {
+          signOut();
+          router.replace('/(auth)/welcome');
+        },
+      },
     ]);
   };
 
@@ -571,7 +586,19 @@ function ProfessionalProfile({ initialTab }: { initialTab?: string }) {
           <View className="mt-6 flex-1">
             {user?.id ? (
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
-                <PortfolioView mode="owner" providerId={user.id} accentColors={['#034660', '#00E7FF']} />
+                <Text className="text-[16px] font-extrabold text-gray-900">Catálogo</Text>
+                <Text className="mt-1 text-[12px] text-gray-400">Adicione itens (foto, preço e descrição) que os clientes podem solicitar.</Text>
+                <View className="mt-4">
+                  <CatalogView mode="owner" providerId={user.id} />
+                </View>
+
+                <View className="my-7 h-px bg-gray-100" />
+
+                <Text className="text-[16px] font-extrabold text-gray-900">Portfólio</Text>
+                <Text className="mt-1 text-[12px] text-gray-400">Estados, destaques e trabalhos.</Text>
+                <View className="mt-4">
+                  <PortfolioView mode="owner" providerId={user.id} accentColors={['#034660', '#00E7FF']} />
+                </View>
               </ScrollView>
             ) : (
               <View className="flex-1 items-center justify-center">

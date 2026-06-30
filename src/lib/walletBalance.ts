@@ -6,12 +6,22 @@ import { computeFees } from './pricing';
  * `requests` é a fonte CONFIÁVEL (escrita direto pelo app); a tabela `payments` depende
  * do backend (confirm/webhook) e nem sempre é populada.
  */
-export function requestRowToPayment(r: any): PaymentRow {
+/** PaymentRow + o split liberado/retido (preenchido para serviços de vários dias). */
+export type WalletPayment = PaymentRow & { released_net?: number; held_net?: number };
+
+export function requestRowToPayment(r: any): WalletPayment {
   const agreed = Number(r.price_amount || 0);
   const isUrgent = !!r.is_urgent;
   const net = r.provider_net != null ? Number(r.provider_net) : computeFees(agreed, isUrgent).providerNet;
   const escrow: 'held' | 'released' =
     r.escrow_status === 'released' || r.status === 'completed' ? 'released' : 'held';
+
+  // Serviço de vários dias: o líquido fica em duas caixas (já liberado vs. ainda retido).
+  // Para serviço normal, derivamos do escrow_status (uma caixa só, como antes).
+  const hasSplit = r.provider_released_amount != null || r.provider_held_amount != null;
+  const releasedNet = hasSplit ? Number(r.provider_released_amount || 0) : escrow === 'released' ? net : 0;
+  const heldNet = hasSplit ? Number(r.provider_held_amount || 0) : escrow === 'held' ? net : 0;
+
   return {
     id: String(r.id),
     request_id: String(r.id),
@@ -24,9 +34,11 @@ export function requestRowToPayment(r: any): PaymentRow {
     paid_at: r.paid_at ?? null,
     escrow_status: escrow,
     provider_net: net,
+    released_net: releasedNet,
+    held_net: heldNet,
     created_at: r.created_at,
     updated_at: r.created_at,
-  } as PaymentRow;
+  } as WalletPayment;
 }
 
 export type WalletBalance = {
@@ -55,16 +67,17 @@ export function paymentEscrow(p: PaymentRow): 'held' | 'released' | 'refunded' {
   return 'released';
 }
 
-export function computeWalletBalance(payments: PaymentRow[], withdrawals: WithdrawalRow[]): WalletBalance {
+export function computeWalletBalance(payments: WalletPayment[], withdrawals: WithdrawalRow[]): WalletBalance {
   const succeeded = (payments || []).filter((p) => p.status === 'succeeded');
 
   let pending = 0;
   let releasedTotal = 0;
   for (const p of succeeded) {
-    const net = paymentProviderNet(p);
-    const esc = paymentEscrow(p);
-    if (esc === 'held') pending += net;
-    else if (esc === 'released') releasedTotal += net;
+    // Quando há split (vários dias), as caixas vêm prontas. Senão, deriva do escrow.
+    const released = p.released_net ?? (paymentEscrow(p) === 'released' ? paymentProviderNet(p) : 0);
+    const held = p.held_net ?? (paymentEscrow(p) === 'held' ? paymentProviderNet(p) : 0);
+    releasedTotal += released;
+    pending += held;
   }
 
   const committed = (withdrawals || [])

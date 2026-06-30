@@ -91,6 +91,12 @@ export type RequestRow = {
   provider_net?: number | null;
   platform_net?: number | null;
   released_at?: string | null;
+  // Serviço de vários dias (FlexPay 30/70)
+  is_multi_day?: boolean | null;
+  installments_paid?: number | null;
+  gpay_pending_installment?: number | null;
+  provider_released_amount?: number | null; // líquido já liberado (sacável)
+  provider_held_amount?: number | null; // líquido ainda retido (escrow)
   created_at: string;
   updated_at: string;
 };
@@ -172,6 +178,17 @@ export type ProviderPostRow = {
   caption: string | null;
   highlight_title: string | null; // usado para "Estados" (stories/highlights)
   post_type?: 'post' | 'story' | null; // 'post' = publicação normal, 'story' = sequência/estado
+  created_at: string;
+};
+
+export type ProviderCatalogRow = {
+  id: string;
+  provider_id: string;
+  name: string;
+  description: string | null;
+  price_amount: number; // valor inteiro em Kwanzas (Kz)
+  currency: string;
+  image_url: string | null;
   created_at: string;
 };
 

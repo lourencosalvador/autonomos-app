@@ -2,19 +2,16 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Image, ImageBackground, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, FlatList, Image, RefreshControl, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
-import IconHartCyan from '../../../assets/icons/hart-cyan.svg';
-import { HomeHeader } from '../../components/HomeHeader';
-import { PendingReview } from '../../components/PendingReview';
-import IconClock from '../../../assets/icons/icon-clock-new.svg';
-import IconEdit from '../../../assets/icons/icon-edit.svg';
-import IconRowView from '../../../assets/icons/row-view.svg';
 import UnionArt from '../../../assets/images/Union.svg';
 import { EmptyState } from '../../components/EmptyState';
+import { HomeHeader } from '../../components/HomeHeader';
+import { PendingReview } from '../../components/PendingReview';
+import { PullToRefresh } from '../../components/PullToRefresh';
 import { categories } from '../../data/categories';
-import { services } from '../../data/services';
+import { formatKz, services, type Service } from '../../data/services';
 import { isSupabaseConfigured, supabase, type PaymentRow, type WithdrawalRow } from '../../lib/supabase';
 import { computeWalletBalance, requestRowToPayment } from '../../lib/walletBalance';
 import { getRandomPhotos } from '../../services/unsplashService';
@@ -36,7 +33,6 @@ type CategoryId =
 export default function HomeScreen() {
   const { user } = useAuthStore();
   const firstName = user?.name?.split(' ')[0] || 'Usuário';
-  const router = useRouter();
 
   if (user?.role === 'professional') {
     // Prestador ainda não aprovado: home mostra o estado "em análise".
@@ -46,42 +42,150 @@ export default function HomeScreen() {
     return <ProfessionalDashboard firstName={firstName} />;
   }
 
-  return <ClientHome firstName={firstName} onSeeAll={() => router.push('/all-services')} />;
+  return <ClientHome firstName={firstName} />;
 }
+
+// Normaliza texto para pesquisa (minúsculas, sem acentos).
+function normalize(s: string) {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim();
+}
+
+// Placeholders mostrados durante o carregamento (skeleton).
+const SKELETON_DATA = Array.from({ length: 6 }, (_, i) => ({ id: `sk-${i}` }));
 
 // Mostra a intro de onboarding do prestador só uma vez por sessão.
 let onboardingPrompted = false;
 
-function ClientHome({ firstName, onSeeAll }: { firstName: string; onSeeAll: () => void }) {
+function ClientHome({ firstName }: { firstName: string }) {
   const router = useRouter();
-  const [selectedId, setSelectedId] = useState<CategoryId>('casa');
+  // null = todas as categorias. Tocar numa categoria filtra; tocar de novo limpa.
+  const [selectedId, setSelectedId] = useState<CategoryId | null>(null);
+  const [query, setQuery] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const getContent = () => {
-    switch (selectedId) {
-      case 'casa':
-        return <CasaSection onSeeAll={onSeeAll} />;
-      case 'beleza':
-        return <BelezaSection />;
-      case 'decoracao':
-        return <DecoracaoSection />;
-      case 'cocktail':
-        return <CocktailSection />;
-      case 'cabeleireiro':
-        return <CabeleireiroSection />;
-      case 'fitness':
-        return <FitnessSection />;
-      case 'tecnologia':
-        return <TecnologiaSection />;
-      case 'educacao':
-        return <EducacaoSection />;
-      case 'saude':
-        return <SaudeSection />;
-      case 'outros':
-        return <OutrosSection />;
-      default:
-        return <CasaSection onSeeAll={onSeeAll} />;
-    }
-  };
+  // Skeleton no primeiro carregamento (enquanto as imagens remotas chegam).
+  useEffect(() => {
+    const t = setTimeout(() => setLoading(false), 900);
+    return () => clearTimeout(t);
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setLoading(true);
+    // Limpa filtros e dá tempo de a lista/imagens reassentarem (sensação de "atualizado").
+    setQuery('');
+    setSelectedId(null);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    setLoading(false);
+    setRefreshing(false);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = normalize(query);
+    return services.filter((service) => {
+      if (selectedId && service.category !== selectedId) return false;
+      if (!q) return true;
+      return normalize(service.name).includes(q) || normalize(service.description).includes(q);
+    });
+  }, [query, selectedId]);
+
+  const openService = (service: Service) =>
+    router.push({ pathname: '/service-providers', params: { serviceName: service.name } });
+
+  const listHeader = (
+    <View className="px-4 pt-20">
+      <View className="mb-6">
+        <HomeHeader
+          firstName={firstName}
+          onNotificationPress={() => router.push('/notificacoes')}
+          onAvatarPress={() => router.push('/(tabs)/profile')}
+        />
+      </View>
+
+      <View className="mb-6 flex-row items-center rounded-full bg-white px-2 py-2">
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          className="flex-1 text-[15px] text-gray-700 pl-4"
+          placeholder="Pesquisar serviços"
+          placeholderTextColor="#9CA3AF"
+          returnKeyType="search"
+        />
+        {query.length > 0 ? (
+          <TouchableOpacity onPress={() => setQuery('')} activeOpacity={0.7} className="px-2">
+            <Ionicons name="close-circle" size={20} color="#9CA3AF" />
+          </TouchableOpacity>
+        ) : null}
+        <View className="p-4 flex justify-center items-center rounded-full" style={{ backgroundColor: '#00E7FF' }}>
+          <Ionicons name="search" size={22} color="#FFFFFF" />
+        </View>
+      </View>
+
+      <View className="mb-3 flex-row items-center justify-between">
+        <Text className="text-[17px] font-extrabold text-gray-900">Categorias</Text>
+        <Text className="text-[12px] font-bold text-gray-400">Explore por área</Text>
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 16, paddingVertical: 6, paddingRight: 8 }}
+      >
+        {categories.map((category) => {
+          const isActive = selectedId === category.id;
+          return (
+            <TouchableOpacity
+              key={category.id}
+              className="items-center"
+              activeOpacity={0.85}
+              // Toca para filtrar; toca na ativa para voltar a ver todos.
+              onPress={() => setSelectedId((prev) => (prev === category.id ? null : (category.id as CategoryId)))}
+              style={{ width: 68 }}
+            >
+              <View
+                className="mb-2 h-[64px] w-[64px] items-center justify-center rounded-[22px]"
+                style={
+                  isActive
+                    ? {
+                        backgroundColor: '#00E7FF',
+                        shadowColor: '#00E7FF',
+                        shadowOpacity: 0.3,
+                        shadowRadius: 22,
+                        shadowOffset: { width: 0, height: 10 },
+                        elevation: 8,
+                      }
+                    : { backgroundColor: '#F4F6F8' }
+                }
+              >
+                <category.Icon size={28} color={isActive ? '#FFFFFF' : '#9CA3AF'} strokeWidth={category.stroke} />
+              </View>
+              <Text
+                className="text-[11.5px]"
+                numberOfLines={1}
+                style={{ color: isActive ? '#0F172A' : '#9CA3AF', fontWeight: isActive ? '800' : '600' }}
+              >
+                {category.name}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      <View className="mt-7 mb-1 flex-row items-center justify-between">
+        <Text className="text-[17px] font-extrabold text-gray-900">
+          {selectedId ? categories.find((c) => c.id === selectedId)?.name : 'Todos os serviços'}
+        </Text>
+        <Text className="text-[12px] font-bold text-gray-400">
+          {filtered.length} {filtered.length === 1 ? 'serviço' : 'serviços'}
+        </Text>
+      </View>
+    </View>
+  );
 
   return (
     <View className="flex-1 bg-white">
@@ -93,78 +197,134 @@ function ClientHome({ firstName, onSeeAll }: { firstName: string; onSeeAll: () =
         style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 360 }}
       />
 
-      <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
-        <View className="px-4 pt-20 mb-8">
-          <View className="mb-6">
-            <HomeHeader
-              firstName={firstName}
-              onNotificationPress={() => router.push('/notificacoes')}
-              onAvatarPress={() => router.push('/(tabs)/profile')}
+      <PullToRefresh
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        indicatorTop={52}
+        data={loading ? SKELETON_DATA : filtered}
+        keyExtractor={(item) => item.id}
+        numColumns={2}
+        showsVerticalScrollIndicator={false}
+        ListHeaderComponent={listHeader}
+        columnWrapperStyle={{ gap: 14, paddingHorizontal: 16 }}
+        contentContainerStyle={{ paddingBottom: 32 }}
+        ListEmptyComponent={
+          <View className="px-6 pt-6">
+            <EmptyState
+              icon="search-outline"
+              title="Nenhum serviço encontrado"
+              description={query ? `Não encontramos resultados para "${query}".` : 'Tente outra categoria.'}
+              actionLabel={query || selectedId ? 'Limpar filtros' : undefined}
+              onAction={
+                query || selectedId
+                  ? () => {
+                      setQuery('');
+                      setSelectedId(null);
+                    }
+                  : undefined
+              }
             />
           </View>
+        }
+        renderItem={({ item }) =>
+          loading ? (
+            <ServiceCardSkeleton />
+          ) : (
+            <ServiceCard service={item as Service} onPress={() => openService(item as Service)} />
+          )
+        }
+      />
+    </View>
+  );
+}
 
-          <View className="mb-6 flex-row items-center rounded-full bg-white px-2 py-2">
-            <TextInput
-              className="flex-1 text-[15px] text-gray-700 pl-4"
-              placeholder="Pesquisar"
-              placeholderTextColor="#9CA3AF"
-            />
-            <View className="p-4 flex justify-center items-center rounded-full" style={{ backgroundColor: '#00E7FF' }}>
-              <Ionicons name="search" size={22} color="#FFFFFF" />
+
+// Card de serviço (grid da home) — imagem, nome, descrição, preço "A partir de" e avaliação.
+function ServiceCard({ service, onPress }: { service: Service; onPress: () => void }) {
+  return (
+    <View style={{ flex: 1, marginBottom: 14 }}>
+      <TouchableOpacity
+        activeOpacity={0.9}
+        onPress={onPress}
+        className="overflow-hidden rounded-3xl bg-white"
+        style={{
+          shadowColor: '#0F172A',
+          shadowOpacity: 0.08,
+          shadowRadius: 16,
+          shadowOffset: { width: 0, height: 8 },
+          elevation: 3,
+        }}
+      >
+        <Image source={service.image} resizeMode="cover" style={{ width: '100%', height: 116 }} />
+        <View className="px-3.5 pb-3.5 pt-3">
+          <Text className="text-[14px] font-extrabold text-gray-900" numberOfLines={1}>
+            {service.name}
+          </Text>
+          <Text className="mt-1 text-[10.5px] leading-4 text-gray-400" numberOfLines={2}>
+            {service.description}
+          </Text>
+
+          <View className="mt-3 flex-row items-end justify-between">
+            <View>
+              <Text className="text-[9.5px] font-semibold text-gray-400">A partir de</Text>
+              <Text className="mt-0.5 text-[15px] font-extrabold text-gray-900">{formatKz(service.priceFrom)}</Text>
             </View>
           </View>
 
-          <View className="mb-3 flex-row items-center justify-between">
-            <Text className="text-[17px] font-extrabold text-gray-900">Categorias</Text>
-            <Text className="text-[12px] font-bold text-gray-400">Explore por área</Text>
+          <View className="mt-2 flex-row items-center gap-0.5">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <Ionicons key={i} name="star" size={12} color="#00E7FF" />
+            ))}
           </View>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 16, paddingVertical: 6, paddingRight: 8 }}
-          >
-            {categories.map((category, index) => {
-              const isActive = selectedId === category.id;
-              return (
-                <TouchableOpacity
-                  key={category.id}
-                  className="items-center"
-                  activeOpacity={0.85}
-                  onPress={() => setSelectedId(categories[index].id as CategoryId)}
-                  style={{ width: 68 }}
-                >
-                  <View
-                    className="mb-2 h-[64px] w-[64px] items-center justify-center rounded-[22px]"
-                    style={
-                      isActive
-                        ? {
-                            backgroundColor: '#00E7FF',
-                            shadowColor: '#00E7FF',
-                            shadowOpacity: 0.3,
-                            shadowRadius: 22,
-                            shadowOffset: { width: 0, height: 10 },
-                            elevation: 8,
-                          }
-                        : { backgroundColor: '#F4F6F8' }
-                    }
-                  >
-                    <category.Icon size={28} color={isActive ? '#FFFFFF' : '#9CA3AF'} strokeWidth={category.stroke} />
-                  </View>
-                  <Text
-                    className="text-[11.5px]"
-                    numberOfLines={1}
-                    style={{ color: isActive ? '#0F172A' : '#9CA3AF', fontWeight: isActive ? '800' : '600' }}
-                  >
-                    {category.name}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
         </View>
-        <View className="flex-1 px-6">{getContent()}</View>
-      </ScrollView>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// Animação de "respiração" (shimmer) para os placeholders do skeleton.
+function useShimmer() {
+  const opacity = useRef(new Animated.Value(0.4)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 1, duration: 650, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.4, duration: 650, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity]);
+  return opacity;
+}
+
+// Card "fantasma" exibido enquanto a lista carrega.
+function ServiceCardSkeleton() {
+  const opacity = useShimmer();
+  const Block = ({ w, h, mt = 0 }: { w: any; h: number; mt?: number }) => (
+    <Animated.View style={{ opacity, width: w, height: h, marginTop: mt, borderRadius: 6, backgroundColor: '#E5E7EB' }} />
+  );
+  return (
+    <View style={{ flex: 1, marginBottom: 14 }}>
+      <View
+        className="overflow-hidden rounded-3xl bg-white"
+        style={{
+          shadowColor: '#0F172A',
+          shadowOpacity: 0.06,
+          shadowRadius: 16,
+          shadowOffset: { width: 0, height: 8 },
+          elevation: 2,
+        }}
+      >
+        <Animated.View style={{ opacity, width: '100%', height: 116, backgroundColor: '#E5E7EB' }} />
+        <View className="px-3.5 pb-3.5 pt-3">
+          <Block w="70%" h={14} />
+          <Block w="100%" h={10} mt={8} />
+          <Block w="85%" h={10} mt={6} />
+          <Block w="45%" h={16} mt={14} />
+          <Block w="55%" h={12} mt={10} />
+        </View>
+      </View>
     </View>
   );
 }
@@ -180,6 +340,19 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
   const [reviewsLoading, setReviewsLoading] = useState(true);
   const [walletBalance, setWalletBalance] = useState(0);
   const [walletCurrency, setWalletCurrency] = useState('USD');
+  const [refreshing, setRefreshing] = useState(false);
+  // Incrementa no pull-to-refresh para re-disparar as cargas (avaliações + carteira).
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await load();
+      setRefreshTick((t) => t + 1);
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   // Onboarding: leva o prestador novo (perfil incompleto) para configurar o perfil.
   // Só dispara quando a coluna existe e está explicitamente false (migração rodada).
@@ -248,7 +421,7 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
     return () => {
       mounted = false;
     };
-  }, [user?.id]);
+  }, [user?.id, refreshTick]);
 
   useEffect(() => {
     let mounted = true;
@@ -280,7 +453,7 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
     return () => {
       mounted = false;
     };
-  }, [user?.id]);
+  }, [user?.id, refreshTick]);
 
   const walletLabel = useMemo(() => {
     return `${walletCurrency} ${(walletBalance / 100).toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -318,7 +491,20 @@ function ProfessionalDashboard({ firstName }: { firstName: string }) {
         style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 360 }}
       />
 
-      <ScrollView className="flex-1" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+      <ScrollView
+        className="flex-1"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#00E7FF']}
+            tintColor="#00E7FF"
+            progressViewOffset={60}
+          />
+        }
+      >
         <View className="px-6 pt-20">
           <HomeHeader
             firstName={firstName}
@@ -555,221 +741,9 @@ function RecentRow({
 }
 
 
-const SectionTitle = ({ children }: { children: string }) => (
-  <Text className="text-2xl font-bold text-white mb-4">{children}</Text>
-);
-
-const CasaSection = ({ onSeeAll }: { onSeeAll: () => void }) => (
-  <View className='w-auto h-auto justify-between gap-8'>
-    <ScrollView
-    horizontal
-    showsHorizontalScrollIndicator={false}
-    contentContainerStyle={{ gap: 8 }}
-  >
-    <View className="w-[22rem] h-[15rem] rounded-3xl bg-brand-cyan px-4 py-5 flex-row justify-between">
-
-      <View className="flex-1 justify-between flex gap-4">
-        <View className="gap-3 mb-2">
-          <Text className="text-[#034660] text-[12px] font-bold leading-[20px]">
-            Encontre o profissional{"\n"}certo em minutos.
-          </Text>
-          <Text className="text-[#034660] text-[11px] font-medium leading-6">
-            Serviços de confiança,  perto  {"\n"} de você
-            Rápido, seguro e sem  {"\n"} complicação.
-          </Text>
-        </View>
-
-        <View className="items-start">
-          <Image
-            source={require('../../../assets/images/splash-icon.png')}
-            style={{ width: 100, height: 36 }}
-            resizeMode="contain"
-
-          />
-        </View>
-      </View>
-
-
-      <View className="items-start mt-4">
-        <IconClock width={105} height={105} />
-      </View>
-    </View>
-    <View className="w-[22rem] h-[15rem] rounded-3xl bg-[#034660] px-4 py-5 flex-row justify-between">
-
-      <View className="flex-1 justify-between flex gap-4">
-        <View className="gap-3 mb-2">
-          <Text className="text-brand-cyan text-[12px] font-bold leading-[20px]">
-            Encontre o profissional{"\n"}certo em minutos.
-          </Text>
-          <Text className="text-white text-[11px] font-medium leading-6">
-            Serviços de confiança,  perto  {"\n"} de você
-            Rápido, seguro e sem  {"\n"} complicação.
-          </Text>
-        </View>
-
-        <View className="items-start">
-          <Image
-            source={require('../../../assets/images/logo-cyan.png')}
-            style={{ width: 100, height: 36 }}
-            resizeMode="contain"
-          />
-        </View>
-      </View>
-
-
-      <View className="items-start mt-4">
-        <IconEdit width={100} height={105} />
-      </View>
-    </View>
-    <View className="w-[22rem] h-[15rem] rounded-3xl bg-brand-cyan px-4 py-5 flex-row justify-between">
-
-      <View className="flex-1 justify-between flex gap-4">
-        <View className="gap-3 mb-2">
-          <Text className="text-[#034660] text-[12px] font-bold leading-[20px]">
-            Encontre o profissional{"\n"}certo em minutos.
-          </Text>
-          <Text className="text-[#034660] text-[11px] font-medium leading-6">
-            Serviços de confiança,  perto  {"\n"} de você
-            Rápido, seguro e sem  {"\n"} complicação.
-          </Text>
-        </View>
-
-        <View className="items-start">
-          <Image
-            source={require('../../../assets/images/splash-icon.png')}
-            style={{ width: 100, height: 36 }}
-            resizeMode="contain"
-
-          />
-        </View>
-      </View>
-
-
-      <View className="items-start mt-4">
-        <IconClock width={105} height={105} />
-      </View>
-    </View>
-  </ScrollView>
-
-  <View className='w-auto h-auto justify-between gap-8'>
-    <View className='w-full justify-between items-center flex-row'>
-      <Text className="text-[15px] font-bold text-zinc-900">Mais Solicitados</Text>
-      <TouchableOpacity activeOpacity={0.8} onPress={onSeeAll}>
-        <Text className="text-[15px] font-bold text-brand-cyan">Ver tudo</Text>
-      </TouchableOpacity>
-    </View>
-    <ScrollView
-    horizontal
-    showsHorizontalScrollIndicator={false}
-    contentContainerStyle={{ gap: 8 }}
-  >
-    {services.map((service) => (
-     <View
-      key={service.id}
-      className="w-[21rem] h-[16rem] rounded-3xl overflow-hidden"
-      >
-     <ImageBackground 
-    source={service.image}
-     resizeMode="cover"
-     className="w-full h-full rounded-3xl px-4 py-5 flex justify-between"
-     >
-       <View className='w-full flex flex-row justify-end items-end'>
-         <IconHartCyan width={24} height={24} />
-       </View>
-       <View className='w-full flex flex-row justify-between items-center'>
-         <View className='w-full flex flex-col gap-1'>
-           <Text className="text-[19px] font-bold text-brand-cyan">{service.name}</Text>
-           <Text className="text-[13px] font-normal text-slate-100/70 w-[13rem]">{service.description}</Text>
-         </View>
-        <View className='w-auto h-auto -ml-12'>
-        <IconRowView width={30} height={30}/>
-        </View>
-       </View>
-     </ImageBackground>
-   </View>
-    ))}
-    </ScrollView>
-  </View>
-  </View>
-);
-
-const BelezaSection = () => (
-  <View>
-    <SectionTitle>Decoração & Design</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Designers de interiores, montagem de móveis, organização de ambientes.
-    </Text>
-  </View>
-);
-
-const DecoracaoSection = () => (
-  <View>
-    <SectionTitle>Decoração & Design</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Designers de interiores, montagem de móveis, organização de ambientes.
-    </Text>
-  </View>
-);
-
-const CocktailSection = () => (
-  <View>
-    <SectionTitle>Cocktail & Bar</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Bartenders profissionais para festas, eventos e drinks personalizados.
-    </Text>
-  </View>
-);
-
-const CabeleireiroSection = () => (
-  <View>
-    <SectionTitle>Cabeleireiro & Barba</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Corte, coloração, barba, tratamento capilar... em casa ou no salão.
-    </Text>
-  </View>
-);
-
-const FitnessSection = () => (
-  <View>
-    <SectionTitle>Fitness & Treino</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Personal trainers, yoga, pilates, funcional... treine onde quiser.
-    </Text>
-  </View>
-);
-
-const TecnologiaSection = () => (
-  <View>
-    <SectionTitle>Tecnologia & Suporte</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Formatação, instalação de redes, conserto de celular, aulas de informática.
-    </Text>
-  </View>
-);
-
-const EducacaoSection = () => (
-  <View>
-    <SectionTitle>Educação & Aulas</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Reforço escolar, idiomas, música, culinária... aprenda no seu ritmo.
-    </Text>
-  </View>
-);
-
-const SaudeSection = () => (
-  <View>
-    <SectionTitle>Saúde & Bem-estar</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Fisioterapia, enfermagem, nutricionista, psicologia... cuidando de você.
-    </Text>
-  </View>
-);
-
-const OutrosSection = () => (
-  <View>
-    <SectionTitle>Outros Serviços</SectionTitle>
-    <Text className="text-gray-300 text-base leading-6">
-      Pet care, costura, fotografia, eventos... tem de tudo!
-    </Text>
-  </View>
-);
+/*
+ * Banner promocional antigo (3 cards "Encontre o profissional certo em minutos")
+ * e as seções por categoria foram comentados/removidos: a home agora lista todos
+ * os serviços num grid com preço e filtra por pesquisa + categoria. O histórico
+ * completo deste código fica disponível no git, caso seja preciso reativar.
+ */
